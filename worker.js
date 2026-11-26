@@ -293,10 +293,11 @@ function continuationStateKey(msg, actorId, business) {
   return `continuation:${business ? (msg.business_connection_id || "business") : "bot"}:${msg.chat.id}:${actorId}`;
 }
 function assistantPauseStateKey(msg, actorId, business) {
-  // Use one stable key for callback queries and incoming messages. Telegram may
-  // omit business_connection_id from callback_query.message, so including it
-  // can make the pause write and the later pause check use different keys.
-  return `assistant_pause:${msg.chat.id}:${actorId}`;
+  // Keep normal bot and Telegram Business pause states completely independent.
+  // The scope is explicit in callback_data because Telegram may omit
+  // business_connection_id from callback_query.message.
+  const scope = business ? "business" : "bot";
+  return `assistant_pause:${scope}:${msg.chat.id}:${actorId}`;
 }
 function isContinueRequest(value) {
   const s = String(value || "").trim().toLowerCase().replace(/[،,؛;.!؟?]+$/g, "").trim();
@@ -392,8 +393,12 @@ async function detectHumanHandoffIntent(env, userText, history = []) {
   // Fail closed on AI/service failure; never substitute brittle phrase matching.
   return false;
 }
-function assistantControlKeyboard(paused = false) {
-  return { inline_keyboard: [[{ text: paused ? "تشغيل المساعد" : "إيقاف المساعد", callback_data: paused ? "user:resume" : "user:pause" }]] };
+function assistantControlKeyboard(paused = false, scope = "business") {
+  const safeScope = scope === "bot" ? "bot" : "business";
+  return { inline_keyboard: [[{
+    text: paused ? "تشغيل المساعد" : "إيقاف المساعد",
+    callback_data: `user:${paused ? "resume" : "pause"}:${safeScope}`
+  }]] };
 }
 async function sendAnswerPart(env, chatId, part, msg, business, hasMore) {
   const content = formatTelegramHtml(part);
@@ -492,7 +497,9 @@ async function validateWebAppInitData(initData, botToken) {
   if (!receivedHash || !/^[a-f0-9]{64}$/i.test(receivedHash)) return null;
   const authDate = Number(params.get("auth_date"));
   const now = nowTs();
-  if (!Number.isFinite(authDate) || authDate > now + 60 || now - authDate > 86400) return null;
+  // Admin sessions are accepted for one hour; users can reopen the Mini App
+  // from Telegram to obtain fresh, signed initData after expiry.
+  if (!Number.isFinite(authDate) || authDate > now + 60 || now - authDate > 3600) return null;
   const dataCheckString = Array.from(params.entries())
     .filter(([key]) => key !== "hash")
     .sort(([a], [b]) => a.localeCompare(b))
@@ -1263,9 +1270,18 @@ async function handleCallback(env, query) {
     });
     return;
   }
-  if (data === "user:pause" || data === "user:resume") {
+  const pauseAction = data.match(/^user:(pause|resume):(business|bot)$/);
+  const legacyPauseAction = data === "user:pause" || data === "user:resume";
+  if (pauseAction || legacyPauseAction) {
     if (!message || !chatId || !message.message_id || !query?.from) {
       await answerCallback(env, query.id, "تعذر تحديد الرسالة.");
+      return;
+    }
+
+    // Old unscoped buttons are ambiguous when Telegram omits the business
+    // connection ID. Refuse them rather than changing the wrong assistant state.
+    if (legacyPauseAction && !businessConnectionId) {
+      await answerCallback(env, query.id, "هذا زر قديم. أرسل رسالة جديدة للحصول على زر التحكم المحدّث.");
       return;
     }
 
@@ -1273,9 +1289,10 @@ async function handleCallback(env, query) {
     // while D1 or message editing is in progress.
     await answerCallback(env, query.id);
 
+    const scope = pauseAction ? pauseAction[2] : "business";
     const callbackMsg = { ...message, business_connection_id: businessConnectionId };
-    const pauseKey = assistantPauseStateKey(callbackMsg, actorId, !!businessConnectionId);
-    const paused = data === "user:pause";
+    const pauseKey = assistantPauseStateKey(callbackMsg, actorId, scope === "business");
+    const paused = pauseAction ? pauseAction[1] === "pause" : data === "user:pause";
 
     if (paused) {
       await env.DB.prepare(`INSERT INTO daki_state(state_key,state_value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
@@ -1292,7 +1309,7 @@ async function handleCallback(env, query) {
       text: paused
         ? "تم إيقاف مساعد DAKI في هذه المحادثة. لن يرد على رسائلك حتى تضغط تشغيل المساعد."
         : "تم تشغيل مساعد DAKI مجدداً. أرسل رسالتك التالية للمتابعة.",
-      reply_markup: assistantControlKeyboard(paused)
+      reply_markup: assistantControlKeyboard(paused, scope)
     };
     if (businessConnectionId) editPayload.business_connection_id = businessConnectionId;
     try {
