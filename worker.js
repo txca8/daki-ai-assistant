@@ -407,4 +407,501 @@ async function sendBackup(env, chatId) {
   }
   const body = JSON.stringify(snapshot, null, 2);
   const blob = new Blob([body], { type: "application/json" });
-  const form = new FormDa
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("document", blob, `daki-backup-${new Date().toISOString().slice(0,10)}.json`);
+  form.append("caption", "نسخة DAKI الاحتياطية. احتفظ بها في مكان آمن؛ لا تحتوي على توكن البوت.");
+  const response = await fetch(TELEGRAM_API(env.TELEGRAM_BOT_TOKEN, "sendDocument"), { method: "POST", body: form });
+  const data = await response.json().catch(() => ({}));
+  if (!data.ok) throw new Error(data.description || "Backup upload failed");
+  await env.DB.prepare("INSERT INTO backup_logs(backup_type,status,details) VALUES('json-export','success',?)")
+    .bind(`tables=${tables.length}`).run();
+}
+async function restoreBackup(env, message, actorId) {
+  if (actorId !== OWNER_ID) throw new Error("الاستعادة متاحة للمالك الرئيسي فقط.");
+  const doc = message.document;
+  if (!doc?.file_id || !String(doc.file_name || "").toLowerCase().endsWith(".json")) {
+    throw new Error("أرسل ملف النسخة الاحتياطية بصيغة JSON مع كتابة /restore في التعليق.");
+  }
+  const fileInfo = await tg(env, "getFile", { file_id: doc.file_id });
+  const fileUrl = `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${fileInfo.file_path}`;
+  const response = await fetch(fileUrl);
+  if (!response.ok) throw new Error("تعذر تنزيل ملف النسخة الاحتياطية.");
+  const backup = await response.json();
+  if (backup?.app !== "DAKI" || !backup.tables || typeof backup.tables !== "object") {
+    throw new Error("صيغة النسخة غير معروفة؛ لم يتم تغيير قاعدة البيانات.");
+  }
+  // Restore is deliberately merge-only: existing rows are not deleted.
+  // Parent tables are restored before dependent message rows.
+  const allowed = ["users","conversations","messages","learning_profiles","recurring_mistakes",
+    "admins","blocked_users","warnings","groups","bot_settings","instructions",
+    "audit_logs","alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state"];
+  let count = 0;
+  for (const table of allowed) {
+    const rows = backup.tables[table];
+    if (!Array.isArray(rows)) continue;
+    const columnsInfo = await env.DB.prepare(`PRAGMA table_info(${table})`).all();
+    const columns = (columnsInfo.results || []).map(c => c.name);
+    for (const row of rows.slice(0, 5000)) {
+      const keys = Object.keys(row).filter(k => columns.includes(k));
+      if (!keys.length) continue;
+      // Never restore admin roles from an uploaded backup; privilege escalation risk.
+      if (table === "admins") continue;
+      // The primary owner must never be imported as blocked.
+      if (table === "blocked_users" && String(row.user_id) === OWNER_ID) continue;
+      const placeholders = keys.map(() => "?").join(",");
+      const sql = `INSERT OR IGNORE INTO ${table}(${keys.join(",")}) VALUES(${placeholders})`;
+      await env.DB.prepare(sql).bind(...keys.map(k => row[k] ?? null)).run();
+      count++;
+    }
+  }
+  await audit(env, actorId, "restore_merge", "", "", `rows considered=${count}`);
+  await env.DB.prepare("INSERT INTO backup_logs(backup_type,status,details) VALUES('json-restore-merge','success',?)")
+    .bind(`rows considered=${count}`).run();
+  return count;
+}
+
+async function commandReply(env, msg, business, actorId, command) {
+  const chatId = msg.chat.id;
+  const opts = replyOptions(msg, business);
+  const args = command.args;
+  const name = command.name;
+  const owner = await isOwner(env, actorId);
+  const adminCommands = new Set([
+    "admin","adminhelp","dakistatus","dakion","dakioff","restartinfo","users","userinfo","userhistory",
+    "searchuser","forgetuser","blocked","ban","unban","warn","warnings","reason","mute","aiinfo","memory",
+    "clearmemory","instructions","addinstruction","editinstruction","delinstruction","reloadprompt",
+    "admins","addadmin","removeadmin","addowner","removeowner","permissions","setpermissions",
+    "groups","groupinfo","groupmode","groupenable","groupdisable","stats","today","weekly","monthly",
+    "topusers","userstats","errors","aistats","health","backup","restore","maintenance","version","logs"
+  ]);
+  if (!adminCommands.has(name)) return false;
+  if (!(await hasPermission(env, actorId, "admin"))) {
+    await sendMessage(env, chatId, "هذا الأمر مخصص لإدارة DAKI.", opts);
+    return true;
+  }
+  const requirePerm = async (perm) => hasPermission(env, actorId, perm);
+  const denied = async () => sendMessage(env, chatId, "ليست لديك صلاحية تنفيذ هذا الإجراء.", opts);
+  const replyTarget = msg.reply_to_message?.from;
+  // A reply always identifies the target; arguments then become the reason.
+  // Without a reply, the first argument is the numeric Telegram ID.
+  const argParts = args.split(/\s+/).filter(Boolean);
+  const targetId = replyTarget?.id ? String(replyTarget.id) : (argParts[0] || "");
+  const reason = replyTarget ? args : argParts.slice(1).join(" ");
+  let out = "";
+  try {
+    switch (name) {
+      case "admin":
+        await sendMessage(env, chatId, "لوحة إدارة DAKI\nاختر القسم المطلوب:", { ...opts, reply_markup: mainPanelKeyboard() }); return true;
+      case "adminhelp":
+        out = "أوامر الإدارة الأساسية:\n/admin لوحة الأزرار\n/dakistatus الحالة\n/dakion تشغيل\n/dakioff إيقاف\n/users المستخدمون\n/ban أو /unban بالرد على رسالة المستخدم\n/warn بالرد على المستخدم\n/stats الإحصائيات\n/backup نسخة احتياطية\n/health فحص النظام\n\nبعض الأوامر تتطلب صلاحية المالك الرئيسي.";
+        break;
+      case "dakistatus":
+        out = `DAKI ${VERSION}\nالحالة: ${await getSetting(env,"bot_enabled","1")==="1" ? "يعمل" : "متوقف"}\nقاعدة البيانات: متصلة\nالمالك الرئيسي: ${OWNER_ID}`;
+        break;
+      case "dakion":
+      case "dakioff":
+        if (!(await requirePerm("control"))) return denied(), true;
+        await setSetting(env, "bot_enabled", name === "dakion" ? "1" : "0", actorId);
+        await audit(env, actorId, name, "", "", "bot_enabled changed");
+        out = name === "dakion" ? "تم تشغيل ردود DAKI." : "تم إيقاف ردود DAKI مؤقتاً.";
+        break;
+      case "restartinfo":
+        out = `إصدار DAKI: ${VERSION}\nCloudflare Worker يعيد التشغيل تلقائياً عند نشر إصدار جديد.`;
+        break;
+      case "users": {
+        const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM users").first();
+        out = `عدد المستخدمين المسجلين: ${row?.n ?? 0}`; break;
+      }
+      case "userinfo":
+      case "searchuser": {
+        if (!(await requirePerm("users"))) return denied(), true;
+        if (!targetId) { out = "استخدم الأمر بالرد على المستخدم أو اكتب رقمه بعد الأمر."; break; }
+        const u = await env.DB.prepare("SELECT * FROM users WHERE user_id=?").bind(targetId).first();
+        out = u ? `المستخدم: ${u.first_name || "—"}\nID: ${u.user_id}\nUsername: @${u.username || "—"}\nاللغة: ${u.language || "—"}\nآخر نشاط: ${u.last_seen}` : "لم أعثر على هذا المستخدم.";
+        break;
+      }
+      case "userhistory": {
+        if (!(await requirePerm("users"))) return denied(), true;
+        if (!targetId) { out = "رد على رسالة المستخدم بالأمر /userhistory."; break; }
+        const c = await env.DB.prepare("SELECT id FROM conversations WHERE user_id=? ORDER BY updated_at DESC LIMIT 1").bind(targetId).first();
+        if (!c) { out = "لا يوجد سجل محادثة."; break; }
+        const rows = await env.DB.prepare("SELECT sender,message_text,created_at FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 10").bind(c.id).all();
+        out = (rows.results || []).reverse().map(r => `${r.sender === "assistant" ? "DAKI" : "المستخدم"}: ${r.message_text}`).join("\n\n") || "السجل فارغ.";
+        break;
+      }
+      case "forgetuser":
+      case "clearmemory": {
+        const id = name === "clearmemory" ? actorId : targetId;
+        if (!id) { out = "رد على رسالة المستخدم بالأمر /forgetuser."; break; }
+        if (id !== actorId && !owner && !(await requirePerm("users"))) return denied(), true;
+        const convs = await env.DB.prepare("SELECT id FROM conversations WHERE user_id=?").bind(id).all();
+        for (const c of convs.results || []) {
+          await env.DB.prepare("DELETE FROM messages WHERE conversation_id=?").bind(c.id).run();
+        }
+        await env.DB.prepare("DELETE FROM conversations WHERE user_id=?").bind(id).run();
+        await env.DB.prepare("DELETE FROM learning_profiles WHERE user_id=?").bind(id).run();
+        await audit(env, actorId, "forget_user", id);
+        out = "تم حذف سجل المحادثات وملف التعلم لهذا المستخدم من D1.";
+        break;
+      }
+      case "blocked": {
+        if (!(await requirePerm("moderation"))) return denied(), true;
+        const rows = await env.DB.prepare("SELECT user_id,reason FROM blocked_users ORDER BY created_at DESC LIMIT 30").all();
+        out = (rows.results || []).map(r => `${r.user_id}${r.reason ? " — " + r.reason : ""}`).join("\n") || "لا يوجد مستخدمون محظورون.";
+        break;
+      }
+      case "ban":
+      case "unban":
+      case "warn":
+      case "mute": {
+        if (!(await requirePerm("moderation"))) return denied(), true;
+        if (!targetId) { out = "رد على رسالة الشخص بالأمر، أو اكتب ID بعد الأمر."; break; }
+        if (targetId === OWNER_ID) { out = "لا يمكن حظر أو تعديل صلاحيات المالك الرئيسي."; break; }
+        if (name === "warn") {
+          await env.DB.prepare("INSERT INTO warnings(user_id,reason,issued_by) VALUES(?,?,?)").bind(targetId, reason || "بدون سبب", actorId).run();
+          await audit(env, actorId, "warn", targetId, reason);
+          out = `تم تسجيل تحذير للمستخدم ${targetId}.`;
+        } else if (name === "mute") {
+          const until = nowTs() + 3600;
+          await env.DB.prepare(`INSERT INTO mutes(user_id,chat_id,until_ts,reason,muted_by) VALUES(?,?,?,?,?)
+            ON CONFLICT(user_id,chat_id) DO UPDATE SET until_ts=excluded.until_ts,reason=excluded.reason,muted_by=excluded.muted_by`)
+            .bind(targetId, String(chatId), until, reason || "ساعة واحدة", actorId).run();
+          if (!business && msg.chat.type !== "private") {
+            try { await tg(env, "restrictChatMember", { chat_id: chatId, user_id: Number(targetId), permissions: { can_send_messages: false }, until_date: until }); }
+            catch (e) { out = `تم حفظ الكتم محلياً، لكن Telegram رفض تقييد العضو: ${e.message}`; break; }
+          }
+          await audit(env, actorId, "mute", targetId, reason);
+          out = `تم كتم المستخدم ${targetId} لمدة ساعة في هذه المحادثة.`;
+        } else if (name === "ban") {
+          await env.DB.prepare("INSERT OR REPLACE INTO blocked_users(user_id,reason,blocked_by) VALUES(?,?,?)").bind(targetId, reason || "بدون سبب", actorId).run();
+          await env.DB.prepare("UPDATE users SET is_blocked=1 WHERE user_id=?").bind(targetId).run();
+          if (!business && msg.chat.type !== "private") {
+            try { await tg(env, "banChatMember", { chat_id: chatId, user_id: Number(targetId) }); }
+            catch (e) { out = `حُظر من DAKI، لكن Telegram لم يسمح بحظره في المجموعة: ${e.message}`; }
+          }
+          await audit(env, actorId, "ban", targetId, reason);
+          if (!out) out = business ? `تم حظر المستخدم من DAKI فقط. لا يمكن لهذا الأمر حظره من حسابك الشخصي في Telegram.` : `تم حظر المستخدم من DAKI.`;
+        } else {
+          await env.DB.prepare("DELETE FROM blocked_users WHERE user_id=?").bind(targetId).run();
+          await env.DB.prepare("UPDATE users SET is_blocked=0 WHERE user_id=?").bind(targetId).run();
+          if (!business && msg.chat.type !== "private") {
+            try { await tg(env, "unbanChatMember", { chat_id: chatId, user_id: Number(targetId), only_if_banned: true }); } catch (_) {}
+          }
+          await audit(env, actorId, "unban", targetId, reason);
+          out = `تم رفع حظر DAKI عن المستخدم ${targetId}.`;
+        }
+        break;
+      }
+      case "warnings": {
+        if (!(await requirePerm("moderation"))) return denied(), true;
+        const id = targetId || actorId;
+        const rows = await env.DB.prepare("SELECT reason,issued_by,created_at FROM warnings WHERE user_id=? ORDER BY id DESC LIMIT 10").bind(id).all();
+        out = (rows.results || []).map(r => `${r.created_at}: ${r.reason} (بواسطة ${r.issued_by})`).join("\n") || "لا توجد تحذيرات.";
+        break;
+      }
+      case "reason": out = "اكتب السبب بعد الأمر، مثال: /ban مخالفة القواعد، ثم أعد الأمر بالرد على رسالة الشخص."; break;
+      case "aiinfo":
+        out = `DAKI مساعد عام ومتخصص في تعليم الألمانية A1–C2.\nالنموذج: ${MODEL}\nالذاكرة: آخر ${HISTORY_LIMIT} رسالة لكل محادثة محفوظة في D1.`; break;
+      case "memory":
+        out = `تُحفظ آخر ${HISTORY_LIMIT} رسالة لكل محادثة في D1، مع فصل محادثات Telegram Business عن المجموعات والمستخدمين.`; break;
+      case "instructions": {
+        const rows = await env.DB.prepare("SELECT id,instruction FROM instructions WHERE active=1 ORDER BY id DESC LIMIT 15").all();
+        out = (rows.results || []).map(r => `${r.id}. ${r.instruction}`).join("\n") || "لا توجد تعليمات إضافية."; break;
+      }
+      case "addinstruction": {
+        if (!(await requirePerm("ai"))) return denied(), true;
+        if (!args) { out = "استخدم: /addinstruction ثم نص التعليمة."; break; }
+        const r = await env.DB.prepare("INSERT INTO instructions(instruction,created_by) VALUES(?,?)").bind(args, actorId).run();
+        await audit(env, actorId, "add_instruction", r.meta?.last_row_id || "", "", args);
+        out = "تمت إضافة التعليمة. ستُستخدم في طلبات الذكاء الاصطناعي القادمة."; break;
+      }
+      case "editinstruction":
+      case "delinstruction": {
+        if (!(await requirePerm("ai"))) return denied(), true;
+        const [id, ...rest] = args.split(/\s+/);
+        if (!/^\d+$/.test(id || "")) { out = `استخدم: /${name} رقم_التعليمة${name === "editinstruction" ? " النص الجديد" : ""}`; break; }
+        if (name === "delinstruction") await env.DB.prepare("UPDATE instructions SET active=0 WHERE id=?").bind(id).run();
+        else await env.DB.prepare("UPDATE instructions SET instruction=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(rest.join(" "), id).run();
+        await audit(env, actorId, name, id);
+        out = "تم تنفيذ العملية."; break;
+      }
+      case "reloadprompt": out = "التعليمات تُقرأ من D1 عند كل طلب جديد؛ لا تحتاج إلى إعادة تشغيل."; break;
+      case "admins": {
+        if (!(await requirePerm("admins")) && !owner) return denied(), true;
+        const rows = await env.DB.prepare("SELECT user_id,role FROM admins ORDER BY created_at").all();
+        out = (rows.results || []).map(r => `${r.user_id} — ${r.role}`).join("\n") || "لا يوجد مشرفون."; break;
+      }
+      case "addadmin":
+      case "addowner": {
+        if (!owner) return denied(), true;
+        if (!targetId || !/^\d+$/.test(targetId)) { out = `استخدم /${name} Telegram_ID`; break; }
+        const role = name === "addowner" ? "owner" : "admin";
+        const perms = role === "owner" ? '{"all":true}' : '{"admin":true,"users":true,"moderation":true}';
+        await env.DB.prepare("INSERT OR REPLACE INTO admins(user_id,role,permissions_json,added_by) VALUES(?,?,?,?)")
+          .bind(targetId, role, perms, actorId).run();
+        await audit(env, actorId, name, targetId);
+        out = `تمت إضافة ${targetId} بدور ${role}.`; break;
+      }
+      case "removeadmin":
+      case "removeowner": {
+        if (!owner) return denied(), true;
+        if (!targetId) { out = `استخدم /${name} Telegram_ID`; break; }
+        if (targetId === OWNER_ID) { out = "المالك الرئيسي محمي ولا يمكن حذفه."; break; }
+        await env.DB.prepare("DELETE FROM admins WHERE user_id=?").bind(targetId).run();
+        await audit(env, actorId, name, targetId);
+        out = `تمت إزالة صلاحيات ${targetId}.`; break;
+      }
+      case "permissions": {
+        if (!owner && !(await requirePerm("admins"))) return denied(), true;
+        const id = targetId || actorId;
+        const a = await getAdmin(env, id);
+        out = a ? `صلاحيات ${id}\nالدور: ${a.role}\nJSON: ${a.permissions_json}` : "هذا المستخدم ليس مشرفاً.";
+        break;
+      }
+      case "setpermissions": {
+        if (!owner) return denied(), true;
+        const parts = args.split(/\s+/).filter(Boolean);
+        const id = parts.shift();
+        const allowed = new Set(["admin","control","users","moderation","ai","groups","stats","maintenance"]);
+        if (!id || !/^\d+$/.test(id) || id === OWNER_ID || !parts.length || parts.some(p => !allowed.has(p))) {
+          out = "استخدم: /setpermissions Telegram_ID admin users moderation ai groups stats maintenance control";
+          break;
+        }
+        const perms = Object.fromEntries(parts.map(p => [p, true]));
+        await env.DB.prepare("UPDATE admins SET permissions_json=? WHERE user_id=?")
+          .bind(JSON.stringify(perms), id).run();
+        await audit(env, actorId, "set_permissions", id, "", JSON.stringify(perms));
+        out = `تم تحديث صلاحيات ${id}: ${parts.join(", ")}`;
+        break;
+      }
+      case "groups": {
+        if (!(await requirePerm("groups"))) return denied(), true;
+        const rows = await env.DB.prepare("SELECT chat_id,title,enabled,mode FROM groups ORDER BY title LIMIT 30").all();
+        out = (rows.results || []).map(r => `${r.title || r.chat_id} (${r.chat_id}) — ${r.enabled ? "مفعلة" : "معطلة"} — ${r.mode}`).join("\n") || "لم تُسجل مجموعات بعد."; break;
+      }
+      case "groupinfo":
+      case "groupmode":
+      case "groupenable":
+      case "groupdisable": {
+        if (!(await requirePerm("groups"))) return denied(), true;
+        const gid = args.split(/\s+/)[0] || (msg.chat.type !== "private" ? String(chatId) : "");
+        if (!gid) { out = "استخدم الأمر داخل المجموعة أو اكتب chat_id."; break; }
+        if (name === "groupenable") await env.DB.prepare("UPDATE groups SET enabled=1 WHERE chat_id=?").bind(gid).run();
+        else if (name === "groupdisable") await env.DB.prepare("UPDATE groups SET enabled=0 WHERE chat_id=?").bind(gid).run();
+        else if (name === "groupmode") {
+          const mode = args.split(/\s+/)[1];
+          if (!["mention","all"].includes(mode)) { out = "استخدم /groupmode chat_id mention أو all"; break; }
+          await env.DB.prepare("UPDATE groups SET mode=? WHERE chat_id=?").bind(mode, gid).run();
+        }
+        const g = await env.DB.prepare("SELECT * FROM groups WHERE chat_id=?").bind(gid).first();
+        out = g ? `المجموعة: ${g.title}\nالحالة: ${g.enabled ? "مفعلة" : "معطلة"}\nالنمط: ${g.mode}` : "المجموعة غير مسجلة بعد."; break;
+      }
+      case "stats":
+      case "today":
+      case "weekly":
+      case "monthly":
+      case "topusers": {
+        if (name === "topusers") {
+          const rows = await env.DB.prepare("SELECT user_id,SUM(quantity) n FROM usage_stats GROUP BY user_id ORDER BY n DESC LIMIT 10").all();
+          out = (rows.results || []).map((r,i) => `${i+1}. ${r.user_id}: ${r.n}`).join("\n") || "لا توجد بيانات.";
+        } else {
+          const interval = name === "weekly" ? "-7 days" : name === "monthly" ? "-30 days" : "0 days";
+          const row = await env.DB.prepare(`SELECT COUNT(*) messages,COUNT(DISTINCT user_id) users FROM usage_stats WHERE event_date >= date('now',?)`).bind(interval).first();
+          const total = await env.DB.prepare("SELECT COUNT(*) n FROM users").first();
+          out = `إحصائيات ${name}:\nالرسائل المسجلة: ${row?.messages || 0}\nالمستخدمون النشطون: ${row?.users || 0}\nإجمالي المستخدمين: ${total?.n || 0}`;
+        }
+        break;
+      }
+      case "userstats": {
+        if (!(await requirePerm("users"))) return denied(), true;
+        const id = targetId || actorId;
+        const user = await env.DB.prepare("SELECT user_id,username,first_name,last_seen FROM users WHERE user_id=?").bind(id).first();
+        const count = await env.DB.prepare("SELECT COALESCE(SUM(quantity),0) n FROM usage_stats WHERE user_id=?").bind(id).first();
+        const profile = await env.DB.prepare("SELECT total_exercises,progress_notes,updated_at FROM learning_profiles WHERE user_id=?").bind(id).first();
+        out = user ? `إحصائيات المستخدم ${id}
+الاسم: ${user.first_name || "—"}
+Username: ${user.username ? "@"+user.username : "—"}
+آخر نشاط: ${user.last_seen || "—"}
+عدد الأنشطة: ${count?.n || 0}
+تمارين مسجلة: ${profile?.total_exercises || 0}
+ملاحظات التعلم: ${profile?.progress_notes || "—"}` : "المستخدم غير مسجل.";
+        break;
+      }
+      case "aistats": {
+        const row = await env.DB.prepare("SELECT COUNT(*) n FROM usage_stats WHERE event_type='message'").first();
+        out = `طلبات المحادثة المسجلة: ${row?.n || 0}`; break;
+      }
+      case "errors": {
+        const rows = await env.DB.prepare("SELECT error_type,error_message,created_at FROM error_logs ORDER BY id DESC LIMIT 10").all();
+        out = (rows.results || []).map(r => `${r.created_at} ${r.error_type}: ${r.error_message}`).join("\n") || "لا توجد أخطاء مسجلة."; break;
+      }
+      case "health":
+        await env.DB.prepare("SELECT 1 AS ok").first();
+        out = `فحص DAKI:\nD1: متصل\nAI binding: ${env.AI?.run ? "موجود" : "غير موجود"}\nTelegram token: ${env.TELEGRAM_BOT_TOKEN ? "موجود" : "غير موجود"}\nالإصدار: ${VERSION}\nهذا فحص إعدادات، وليس اختباراً كاملاً لاستدعاء النموذج.`; break;
+      case "backup":
+        if (!owner) return denied(), true;
+        await sendBackup(env, chatId);
+        await audit(env, actorId, "backup_export");
+        return true;
+      case "restore":
+        if (!owner) return denied(), true;
+        out = "للاستعادة: أرسل ملف JSON الاحتياطي إلى البوت مع كتابة /restore في تعليق الملف. الاستعادة دمجية ولا تحذف السجلات الحالية، ولا تستعيد صلاحيات المشرفين.";
+        break;
+      case "maintenance": {
+        if (!(await requirePerm("maintenance"))) return denied(), true;
+        const mode = args.toLowerCase();
+        if (mode === "on" || mode === "تشغيل") await setSetting(env, "maintenance", "1", actorId);
+        else if (mode === "off" || mode === "إيقاف") await setSetting(env, "maintenance", "0", actorId);
+        const active = await getSetting(env, "maintenance", "0") === "1";
+        await audit(env, actorId, "maintenance", "", "", active ? "on" : "off");
+        out = `وضع الصيانة: ${active ? "مفعل" : "غير مفعل"}.\nللتغيير: /maintenance on أو /maintenance off`;
+        break;
+      }
+      case "version": out = `DAKI ${VERSION}`; break;
+      case "logs": {
+        const rows = await env.DB.prepare("SELECT action,actor_id,target_id,created_at FROM audit_logs ORDER BY id DESC LIMIT 10").all();
+        out = (rows.results || []).map(r => `${r.created_at}: ${r.action} by ${r.actor_id} -> ${r.target_id || "-"}`).join("\n") || "لا توجد سجلات."; break;
+      }
+      default: return false;
+    }
+  } catch (e) {
+    await logError(env, "ADMIN_COMMAND", e, `command=${name}, actor=${actorId}`);
+    out = `تعذر تنفيذ الأمر: ${e.message}`;
+  }
+  await sendMessage(env, chatId, out || "تم.", opts);
+  return true;
+}
+
+async function handleCallback(env, query) {
+  const actorId = getUserId(query.from);
+  if (!(await hasPermission(env, actorId, "admin"))) {
+    await answerCallback(env, query.id, "غير مصرح لك.");
+    return;
+  }
+  const data = String(query.data || "");
+  try {
+    if (data === "adm:close") {
+      await tg(env, "deleteMessage", { chat_id: query.message.chat.id, message_id: query.message.message_id });
+    } else if (data === "adm:home") {
+      await editPanel(env, query, "home");
+    } else if (data.startsWith("adm:")) {
+      await editPanel(env, query, data.slice(4));
+    } else if (data.startsWith("cmd:")) {
+      const fakeMsg = { chat: query.message.chat, message_id: query.message.message_id, from: query.from, text: "/" + data.slice(4) };
+      await commandReply(env, fakeMsg, false, actorId, parseCommand(fakeMsg.text));
+    } else if (data.startsWith("hint:")) {
+      const hints = {
+        forget: "لحذف ذاكرة مستخدم: رد على رسالته بالأمر /forgetuser.",
+        moderation: "في المجموعة: رد على رسالة الشخص بالأمر /ban أو /warn. يتطلب الحظر صلاحية مشرف البوت.",
+        addinstruction: "أرسل /addinstruction ثم نص التعليمة.",
+        addadmin: "المالك الرئيسي فقط: /addadmin Telegram_ID",
+        removeadmin: "المالك الرئيسي فقط: /removeadmin Telegram_ID",
+        groups: "أضف البوت إلى المجموعة. يستجيب عند منشن @DakiSchuleBot أو الرد على رسالة منه."
+      };
+      await sendMessage(env, query.message.chat.id, hints[data.slice(5)] || "راجع /adminhelp.");
+    }
+    await answerCallback(env, query.id);
+  } catch (e) {
+    await logError(env, "CALLBACK", e, `data=${data}`);
+    await answerCallback(env, query.id, "حدث خطأ أثناء تنفيذ الإجراء.");
+  }
+}
+
+async function handleMessage(env, msg, business) {
+  if (!msg?.chat || !msg?.from || msg.from.is_bot) return;
+  const actorId = getUserId(msg.from);
+  const chatId = msg.chat.id;
+  const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup";
+  const connectionId = business ? msg.business_connection_id : "";
+  const messageText = String(msg.text || msg.caption || "").trim();
+
+  await upsertUser(env, msg.from);
+  if (isGroup) await upsertGroup(env, msg.chat);
+
+  if (msg.document && actorId === OWNER_ID && /\/restore\b/i.test(msg.caption || "")) {
+    try {
+      const count = await restoreBackup(env, msg, actorId);
+      await sendMessage(env, chatId, `اكتملت الاستعادة الدمجية. السجلات التي تمت مراجعتها: ${count}.`, replyOptions(msg, business));
+    } catch (e) {
+      await sendMessage(env, chatId, `فشلت الاستعادة: ${e.message}`, replyOptions(msg, business));
+    }
+    return;
+  }
+
+  const command = parseCommand(messageText);
+  if (command) {
+    const handled = await commandReply(env, msg, business, actorId, command);
+    if (handled) return;
+  }
+
+  if (await isBlocked(env, actorId)) return;
+  const mute = await env.DB.prepare("SELECT until_ts FROM mutes WHERE user_id=? AND chat_id=?")
+    .bind(actorId, String(chatId)).first();
+  if (mute && Number(mute.until_ts) > nowTs()) return;
+  if (mute) await env.DB.prepare("DELETE FROM mutes WHERE user_id=? AND chat_id=?")
+    .bind(actorId, String(chatId)).run();
+  if (isGroup) {
+    const allowed = await isGroupAllowed(env, chatId, messageText, msg.reply_to_message);
+    if (!allowed) return;
+  } else if (!business && !isPrivate(msg.chat)) {
+    return;
+  }
+
+  if (!messageText) return;
+  if (await getSetting(env, "bot_enabled", "1") !== "1") {
+    if (actorId === OWNER_ID) await sendMessage(env, chatId, "ردود DAKI متوقفة حالياً. استخدم /dakion لإعادة التشغيل.", replyOptions(msg, business));
+    return;
+  }
+  if (await getSetting(env, "maintenance", "0") === "1" && actorId !== OWNER_ID) {
+    await sendMessage(env, chatId, "DAKI في وضع الصيانة حالياً. حاول مرة أخرى لاحقاً.", replyOptions(msg, business));
+    return;
+  }
+
+  if (!isGroup && isPrivate(msg.chat)) await welcomeOnce(env, chatId, actorId, connectionId, business);
+
+  const key = conversationKey(chatId, connectionId, actorId, business);
+  const conversation = await getConversation(env, key, chatId, actorId, connectionId, msg.chat.type);
+  try {
+    const parsed = await aiReply(env, conversation.id, actorId, messageText);
+    let answer = parsed.reply;
+    if (parsed.need_human) answer += `\n\nإذا احتجت إلى تدخل صاحب الحساب، يمكنك التواصل عبر ${CHANNEL}`;
+    const options = replyOptions(msg, business);
+    await sendMessage(env, chatId, answer, options);
+  } catch (e) {
+    await logError(env, "AI_REPLY", e, `user=${actorId}, chat=${chatId}`);
+    await sendMessage(env, chatId,
+      `تعذر على DAKI إكمال هذه الرسالة بعد عدة محاولات. تم تسجيل الخطأ تقنياً. حاول مجدداً بعد قليل.`,
+      replyOptions(msg, business));
+  }
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/") {
+      return json({ ok: true, service: "DAKI", version: VERSION, status: "running" });
+    }
+    if (request.method !== "POST") return text("Method not allowed", 405);
+
+    let update;
+    try { update = await request.json(); }
+    catch (_) { return text("Invalid JSON", 400); }
+
+    try {
+      await ensureSchema(env);
+      if (update.callback_query) {
+        await handleCallback(env, update.callback_query);
+      } else if (update.business_message) {
+        await handleMessage(env, update.business_message, true);
+      } else if (update.message) {
+        await handleMessage(env, update.message, false);
+      } else if (update.edited_business_message) {
+        // Ignore edits to avoid duplicate AI responses.
+      }
+    } catch (e) {
+      await logError(env, "WEBHOOK", e, "update processing failed");
+    }
+    return text("OK", 200);
+  }
+};
