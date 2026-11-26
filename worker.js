@@ -16,7 +16,7 @@
  *   personal Telegram account.
  */
 
-const VERSION = "2.5.4";
+const VERSION = "2.5.5";
 const BOT_USERNAME = "DakiSchuleBot";
 const CHANNEL = "@DakiSchule";
 const CHANNEL_URL = "https://t.me/DakiSchule";
@@ -338,43 +338,68 @@ function splitAnswerCoherently(value, maxLength = 2500) {
   if (rest) chunks.push(rest);
   return chunks;
 }
-async function detectHumanHandoffIntent(env, userText) {
-  // Semantic intent detection: supports paraphrases, colloquial speech and multilingual requests.
-  // Fail closed to the existing conservative pattern detector if Workers AI is unavailable.
+async function detectHumanHandoffIntent(env, userText, history = []) {
+  // Semantic-only intent understanding. No phrase lists, keyword matching or dialect-specific rules.
+  const context = (Array.isArray(history) ? history : []).slice(-8).map(item => ({
+    role: item.role === "assistant" ? "assistant" : "user",
+    content: String(item.content || "").slice(0, 900)
+  }));
+  const classifierPrompt = [
+    "You are an intent classifier for a chat assistant.",
+    "Decide whether the latest user message, interpreted together with the recent conversation, expresses an intention to stop talking only to the automated assistant and instead speak, communicate, or be personally answered by the human account owner/operator (Mrs. Daki) or another human responsible for this account.",
+    "Understand meaning, not wording. The user may use any language, dialect, colloquial speech, slang, indirect phrasing, hints, euphemisms, spelling mistakes, transliteration, mixed languages, or refer to a person indirectly using context.",
+    "Do not require the user to mention a person's name, the word human, contact, owner, or any particular phrase.",
+    "Classify as HANDOFF when the practical intent is to reach or involve the human behind the account, even if expressed politely, indirectly, emotionally, or as a request for the person to reply personally.",
+    "Classify as NORMAL when the user merely asks the assistant a question, asks about the owner without seeking contact, or mentions a human hypothetically. If the context clearly establishes that a pronoun or indirect reference means the account owner and the user wants that person involved, classify as HANDOFF.",
+    "Do not answer the user. Output exactly one token: HANDOFF or NORMAL. No punctuation, explanation, JSON, or extra text."
+  ].join(" ");
+  const messages = [
+    { role: "system", content: classifierPrompt },
+    ...context,
+    { role: "user", content: String(userText || "").slice(0, 1800) }
+  ];
   try {
-    const result = await env.AI.run(MODEL, {
+    let result = await env.AI.run(MODEL, { messages, max_tokens: 8, temperature: 0 });
+    let raw = result?.response ?? result?.choices?.[0]?.message?.content ??
+      result?.result?.response ?? result?.output ?? "";
+    if (typeof raw !== "string") {
+      if (raw && typeof raw === "object") raw = raw.text ?? raw.content ?? JSON.stringify(raw);
+      else raw = String(raw ?? "");
+    }
+    const normalized = raw.trim().toUpperCase();
+    if (/\bHANDOFF\b/.test(normalized) && !/\bNORMAL\b/.test(normalized)) return true;
+    if (/\bNORMAL\b/.test(normalized) && !/\bHANDOFF\b/.test(normalized)) return false;
+
+    // One format-repair retry if the model did not follow the one-token contract.
+    result = await env.AI.run(MODEL, {
       messages: [
-        { role: "system", content: "Classify the user's intent. Return ONLY valid JSON: {\"wants_human\":true} or {\"wants_human\":false}. Set true only when the user is asking, directly or indirectly, to personally speak/contact/reach the account owner, Mrs. Daki, or a human representative. Understand all languages, dialects, slang, misspellings, polite hints and paraphrases. Set false for merely mentioning Daki, asking about Daki, asking the bot to explain something, or quoting another person's request. Do not answer the user." },
+        { role: "system", content: "Return exactly HANDOFF if the user's intent is to reach or speak personally with the human account owner/operator; otherwise return exactly NORMAL. Judge meaning and conversation context across any language or dialect. No keyword list. Output one token only." },
+        ...context,
         { role: "user", content: String(userText || "").slice(0, 1800) }
       ],
-      max_tokens: 80
+      max_tokens: 8,
+      temperature: 0
     });
-    let raw = result?.response ?? result?.choices?.[0]?.message?.content ?? result?.result?.response ?? "";
-    if (typeof raw !== "string") raw = JSON.stringify(raw ?? {});
-    const match = raw.match(/\{[\s\S]*?\}/);
-    if (match) {
-      const parsed = JSON.parse(match[0]);
-      if (typeof parsed.wants_human === "boolean") return parsed.wants_human;
+    raw = result?.response ?? result?.choices?.[0]?.message?.content ??
+      result?.result?.response ?? result?.output ?? "";
+    if (typeof raw !== "string") {
+      if (raw && typeof raw === "object") raw = raw.text ?? raw.content ?? JSON.stringify(raw);
+      else raw = String(raw ?? "");
     }
-    if (/\btrue\b/i.test(raw) && !/\bfalse\b/i.test(raw)) return true;
-    if (/\bfalse\b/i.test(raw)) return false;
+    const retry = raw.trim().toUpperCase();
+    if (/\bHANDOFF\b/.test(retry) && !/\bNORMAL\b/.test(retry)) return true;
+    if (/\bNORMAL\b/.test(retry) && !/\bHANDOFF\b/.test(retry)) return false;
+    console.error("Handoff classifier returned an unrecognized result:", safeString(retry, 120));
   } catch (error) {
     console.error("Handoff intent classification failed:", safeString(error?.message || error, 400));
   }
-  return isHumanHandoffRequest(userText);
+  // Fail closed on AI/service failure; never substitute brittle phrase matching.
+  return false;
 }
 async function sendAnswerPart(env, chatId, part, msg, business, hasMore) {
   const suffix = hasMore ? "\n\nهل تريد أن أكمل؟ أرسل «نعم» لأتابع من حيث توقفت." : "";
   const content = formatTelegramHtml(part + suffix);
   await sendMessage(env, chatId, content, { ...replyOptions(msg, business), parse_mode: "HTML" });
-}
-function isHumanHandoffRequest(value) {
-  const s = String(value || "").toLowerCase();
-  const arabic = /(اريد|أريد|ابغى|احتاج|أحتاج|خليني|دعني).{0,35}(اتحدث|أتحدث|التحدث|أتكلم|اكلم|أكلم|التكلم|اتواصل|أتواصل|اتصل|أقابل).{0,35}(المالك|المالكة|صاحب الحساب|صاحبة الحساب|السيدة|مدام|مس داكي|داكي|daki)/.test(s);
-  const english = /\b(speak|talk|chat|contact).{0,30}\b(owner|human|daki|account owner)\b|\b(human support|talk to a person)\b/.test(s);
-  const german = /(ich möchte|ich will|kann ich).{0,35}(mit .{0,15}(daki|inhaber|besitzer).{0,15}(sprechen|reden)|den inhaber kontaktieren)/.test(s);
-  const chinese = /(联系|找|和).{0,8}(管理员|老板|主人|daki)|想.{0,10}(联系|找).{0,8}(管理员|老板|主人|daki)/i.test(s);
-  return arabic || english || german || chinese;
 }
 function getUserId(from) { return from?.id == null ? "" : String(from.id); }
 function isPrivate(chat) { return chat?.type === "private"; }
@@ -1523,7 +1548,15 @@ async function handleMessage(env, msg, business) {
   if (!command && !isGroup && actorId !== OWNER_ID) {
     await welcomeOnce(env, chatId, actorId, connectionId, business);
   }
-  if (!command && actorId !== OWNER_ID && await detectHumanHandoffIntent(env, messageText)) {
+  const existingHandoffKey = conversationKey(chatId, connectionId, actorId, business);
+  const existingHandoffConversation = await env.DB.prepare(
+    "SELECT id FROM conversations WHERE conversation_key=?"
+  ).bind(existingHandoffKey).first();
+  const handoffHistory = existingHandoffConversation
+    ? await loadHistory(env, existingHandoffConversation.id)
+    : [];
+  if (!command && actorId !== OWNER_ID &&
+      await detectHumanHandoffIntent(env, messageText, handoffHistory)) {
     const displayName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(" ") || "غير معروف";
     const username = msg.from.username ? "@" + msg.from.username : "بدون اسم مستخدم";
     const contextLabel = business ? "Telegram Business" : (isGroup ? "مجموعة" : "محادثة البوت");
@@ -1546,7 +1579,7 @@ async function handleMessage(env, msg, business) {
       ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at=CURRENT_TIMESTAMP`)
       .bind(stateKey, String(until)).run();
     await sendMessage(env, chatId,
-      "تم إيصال طلبك إلى السيدة داكي، وستتابعه وتستجيب لك قريباً. سأتوقف الآن عن الرد في هذه المحادثة لمدة تصل إلى 10 ساعات. إذا أردت عودة المساعد قبل ذلك، أرسل الأمر /bot. وبعد انتهاء المدة يعود تلقائياً.",
+      "لقد تواصلت بالفعل مع السيدة Daki، وستستجيب لك قريباً.\n\nسأتوقف عن الرد في هذه المحادثة لمدة تصل إلى 10 ساعات. إذا أردت عودة المساعد قبل ذلك، أرسل الأمر /bot. وبعد انتهاء المدة، أرسل رسالة جديدة لاستئناف المحادثة. لن أرد على الرسائل التي ترسلها أثناء فترة التوقف.",
       replyOptions(msg, business));
     return;
   }
@@ -1641,24 +1674,4 @@ export default {
 
     let update;
     try { update = await request.json(); }
-    catch (_) { return text("Invalid JSON", 400); }
-
-    try {
-      await ensureSchema(env);
-      try { await ensureTelegramCommands(env); }
-      catch (commandSetupError) { await logError(env, "TELEGRAM_COMMAND_SETUP", commandSetupError); }
-      if (update.callback_query) {
-        await handleCallback(env, update.callback_query);
-      } else if (update.business_message) {
-        await handleMessage(env, update.business_message, true);
-      } else if (update.message) {
-        await handleMessage(env, update.message, false);
-      } else if (update.edited_business_message) {
-        // Ignore edits to avoid duplicate AI responses.
-      }
-    } catch (e) {
-      await logError(env, "WEBHOOK", e, "update processing failed");
-    }
-    return text("OK", 200);
-  }
-};
+    catch (_) { return text("Invalid JSON",
