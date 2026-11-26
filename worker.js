@@ -1,6 +1,6 @@
 /*
  * DAKI Telegram Business + Group Assistant
- * Version: 2.5.8
+ * Version: 2.5.9
  * Cloudflare Worker bindings:
  *   AI  - Workers AI
  *   DB  - D1 database (daki-db)
@@ -16,7 +16,7 @@
  *   personal Telegram account.
  */
 
-const VERSION = "2.5.8";
+const VERSION = "2.5.9";
 const BOT_USERNAME = "DakiSchuleBot";
 const OWNER_USERNAME = "Daakkiiii";
 const CHANNEL = "@DakiSchule";
@@ -1459,28 +1459,42 @@ async function handleCallback(env, query) {
     return;
   }
   if (data === "user:pause" || data === "user:resume") {
-    if (!message || !chatId || !query?.from) {
-      await answerCallback(env, query.id, "تعذر تحديد المحادثة.");
+    if (!message || !chatId || !message.message_id || !query?.from) {
+      await answerCallback(env, query.id, "تعذر تحديد الرسالة.");
       return;
     }
+
+    // Acknowledge the tap immediately so Telegram does not leave the button spinning
+    // while D1 or message editing is in progress.
+    await answerCallback(env, query.id);
+
     const callbackMsg = { ...message, business_connection_id: businessConnectionId };
     const pauseKey = assistantPauseStateKey(callbackMsg, actorId, !!businessConnectionId);
-    if (data === "user:pause") {
+    const paused = data === "user:pause";
+
+    if (paused) {
       await env.DB.prepare(`INSERT INTO daki_state(state_key,state_value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
         ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at=CURRENT_TIMESTAMP`)
         .bind(pauseKey, "1").run();
-      await answerCallback(env, query.id, "تم إيقاف المساعد في هذه المحادثة.");
-      await sendMessage(env, chatId, "تم إيقاف المساعد في هذه المحادثة. يمكنك تشغيله من الزر أدناه.", {
-        ...(businessConnectionId ? { business_connection_id: businessConnectionId } : {}),
-        reply_markup: assistantControlKeyboard(true)
-      });
     } else {
       await env.DB.prepare("DELETE FROM daki_state WHERE state_key=?").bind(pauseKey).run();
-      await answerCallback(env, query.id, "تم تشغيل المساعد.");
-      await sendMessage(env, chatId, "عاد مساعد DAKI إلى العمل. أرسل رسالتك التالية للمتابعة.", {
-        ...(businessConnectionId ? { business_connection_id: businessConnectionId } : {}),
-        reply_markup: assistantControlKeyboard(false)
-      });
+    }
+
+    // Update the original assistant answer in place; do not send a second message.
+    const editPayload = {
+      chat_id: chatId,
+      message_id: message.message_id,
+      text: paused
+        ? "تم إيقاف مساعد DAKI في هذه المحادثة. لن يرد على رسائلك حتى تضغط تشغيل المساعد."
+        : "تم تشغيل مساعد DAKI مجدداً. أرسل رسالتك التالية للمتابعة.",
+      reply_markup: assistantControlKeyboard(paused)
+    };
+    if (businessConnectionId) editPayload.business_connection_id = businessConnectionId;
+    try {
+      await tg(env, "editMessageText", editPayload);
+    } catch (error) {
+      // A repeated tap may leave the text and keyboard unchanged.
+      if (!/message is not modified/i.test(String(error?.message || error))) throw error;
     }
     return;
   }
