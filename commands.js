@@ -494,18 +494,18 @@ Username: ${user.username ? "@"+user.username : "—"}
 
 
 const LEGACY_COMMAND_PERMISSIONS = {
-  dakistatus: "control", dakion: "control", dakioff: "control", restartinfo: "control",
+  dakistatus: "control", dakion: "owner", dakioff: "owner", restartinfo: "control",
   users: "users", userinfo: "users", userhistory: "users", searchuser: "users",
-  forgetuser: "users", userstats: "users",
+  forgetuser: "users.erase", userstats: "users",
   blocked: "moderation", ban: "moderation", unban: "moderation", warn: "moderation",
   warnings: "moderation", reason: "moderation", mute: "moderation",
-  aiinfo: "ai", memory: "ai", clearmemory: "ai", instructions: "ai",
-  addinstruction: "ai", editinstruction: "ai", delinstruction: "ai", reloadprompt: "ai",
+  aiinfo: "ai", memory: "ai", clearmemory: "ai",
+  instructions: "owner", addinstruction: "owner", editinstruction: "owner", delinstruction: "owner", reloadprompt: "owner",
   admins: "admins", addadmin: "admins", removeadmin: "admins", addowner: "admins",
   removeowner: "admins", permissions: "admins", setpermissions: "admins",
-  groups: "groups", groupinfo: "groups", groupmode: "groups", groupenable: "groups", groupdisable: "groups",
+  groups: "groups", groupinfo: "groups", groupmode: "groups.manage", groupenable: "groups.manage", groupdisable: "groups.manage",
   stats: "stats", today: "stats", weekly: "stats", monthly: "stats", topusers: "stats", aistats: "stats",
-  errors: "maintenance", health: "maintenance", backup: "maintenance", restore: "maintenance", maintenance: "maintenance", logs: "maintenance"
+  errors: "maintenance", health: "maintenance", backup: "maintenance", restore: "maintenance", maintenance: "owner", logs: "maintenance"
 };
 
 const COMMAND_DETAILS = {
@@ -558,7 +558,7 @@ for (const command of ADMIN_COMMANDS) {
   command.usage = usage;
   command.notes = notes;
   command.permission = LEGACY_COMMAND_PERMISSIONS[command.name] || "admin";
-  command.ownerOnly = ["admin","addadmin","removeadmin","addowner","removeowner","setpermissions","backup","restore"].includes(command.name);
+  command.ownerOnly = ["admin","addadmin","removeadmin","addowner","removeowner","setpermissions","backup","restore","dakion","dakioff","maintenance","instructions","addinstruction","editinstruction","delinstruction","reloadprompt"].includes(command.name);
   command.risk = ["forgetuser","ban","unban","mute","clearmemory","addadmin","removeadmin","addowner","removeowner","setpermissions","backup","restore","maintenance","dakioff"].includes(command.name) ? "high" : "normal";
 }
 export const COMMAND_PERMISSIONS = Object.freeze(Object.fromEntries(ADMIN_COMMANDS.map(c => [c.name, c.permission])));
