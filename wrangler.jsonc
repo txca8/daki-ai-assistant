@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "daki-ai-assistant",
+  "main": "worker.js",
+  "compatibility_date": "2026-11-26",
+  "workers_dev": true,
+  "ai": {
+    "binding": "AI"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "daki-db",
+      "database_id": "4b8838ad-bcda-4809-b669-227183afa667"
+    }
+  ]
+}
