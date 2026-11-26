@@ -1,6 +1,6 @@
 /*
  * DAKI Telegram Business + Group Assistant
- * Version: 2.5.9
+ * Version: 2.5.10
  * Cloudflare Worker bindings:
  *   AI  - Workers AI
  *   DB  - D1 database (daki-db)
@@ -16,7 +16,7 @@
  *   personal Telegram account.
  */
 
-const VERSION = "2.5.9";
+const VERSION = "2.5.10";
 const BOT_USERNAME = "DakiSchuleBot";
 const OWNER_USERNAME = "Daakkiiii";
 const CHANNEL = "@DakiSchule";
@@ -257,14 +257,48 @@ function escapeHtml(s) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"
   })[c]);
 }
+function stripDecorativeEmoji(value) {
+  // Remove pictographic emoji from normal prose while preserving ordinary symbols and letters.
+  return String(value ?? "").replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, "");
+}
+function normalizeMathText(value) {
+  let out = String(value ?? "");
+  // Unwrap common inline/display math delimiters without deleting their contents.
+  out = out.replace(/\\\[([\s\S]*?)\\\]/g, "$1")
+    .replace(/\\\(([\s\S]*?)\\\)/g, "$1")
+    .replace(/\$\$([\s\S]*?)\$\$/g, "$1")
+    .replace(/\$([^$\n]+)\$/g, "$1");
+  const commands = {
+    "\\rightarrow": "→", "\\to": "→", "\\leftarrow": "←", "\\leftrightarrow": "↔",
+    "\\Rightarrow": "⇒", "\\Leftarrow": "⇐", "\\Leftrightarrow": "⇔",
+    "\\times": "×", "\\cdot": "·", "\\div": "÷", "\\pm": "±",
+    "\\leq": "≤", "\\le": "≤", "\\geq": "≥", "\\ge": "≥",
+    "\\neq": "≠", "\\approx": "≈", "\\equiv": "≡", "\\infty": "∞",
+    "\\degree": "°", "\\alpha": "α", "\\beta": "β", "\\pi": "π",
+    "\\%": "%", "\\_": "_", "\\#": "#", "\\&": "&"
+  };
+  for (const [command, symbol] of Object.entries(commands)) {
+    out = out.replace(new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), symbol);
+  }
+  out = out.replace(/\\text\s*\{([^{}]*)\}/g, "$1")
+    .replace(/\\mathrm\s*\{([^{}]*)\}/g, "$1")
+    .replace(/\\mathbf\s*\{([^{}]*)\}/g, "$1")
+    .replace(/\\(?:left|right)\b/g, "")
+    .replace(/\\(?:,|;|!|quad|qquad)/g, " ")
+    .replace(/[{}]/g, "")
+    .replace(/\\/g, "");
+  return out;
+}
 function markdownInlineToHtml(value) {
   const placeholders = [];
-  let out = escapeHtml(value);
-  out = out.replace(/`([^`]+)`/g, (_, code) => {
+  // Protect inline code so math/emoji cleanup never alters literal code examples.
+  let source = String(value ?? "").replace(/`([^`]+)`/g, (_, code) => {
     const key = `@@CODE${placeholders.length}@@`;
-    placeholders.push(`<code>${code}</code>`);
+    placeholders.push(`<code>${escapeHtml(code)}</code>`);
     return key;
   });
+  source = stripDecorativeEmoji(normalizeMathText(source));
+  let out = escapeHtml(source);
   out = out.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
     .replace(/__(.+?)__/g, "<b>$1</b>")
     .replace(/~~(.+?)~~/g, "<s>$1</s>")
@@ -293,13 +327,13 @@ function formatTelegramHtml(value) {
     const numbered = line.match(/^\s*(\d+)[.)]\s+(.+)$/);
     const bullet = line.match(/^\s*[-*+]\s+(.+)$/);
     if (heading) output.push(`<b>${markdownInlineToHtml(heading[1])}</b>`);
-    else if (/^\s*(---+|___+|\*\*\*+)\s*$/.test(line)) output.push("━━━━━━━━━━━━━━━━");
+    else if (/^\s*(---+|___+|\*\*\*+|[━─═]{4,})\s*$/.test(line)) output.push("");
     else if (numbered) output.push(`<b>${numbered[1]}.</b> ${markdownInlineToHtml(numbered[2])}`);
     else if (bullet) output.push(`• ${markdownInlineToHtml(bullet[1])}`);
     else output.push(markdownInlineToHtml(line));
   }
   if (inCode) output.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
-  return output.join("\n");
+  return output.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 function handoffStateKey(msg, actorId, business) {
   return `handoff:${business ? (msg.business_connection_id || "business") : "bot"}:${msg.chat.id}:${actorId}`;
