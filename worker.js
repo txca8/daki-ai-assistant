@@ -16,8 +16,9 @@
  *   personal Telegram account.
  */
 
-const VERSION = "2.5.6";
+const VERSION = "2.5.7";
 const BOT_USERNAME = "DakiSchuleBot";
+const OWNER_USERNAME = "Daakkiiii";
 const CHANNEL = "@DakiSchule";
 const CHANNEL_URL = "https://t.me/DakiSchule";
 const ADMIN_URL = "https://daki-ai-assistant.khtin157.workers.dev/admin";
@@ -64,7 +65,7 @@ GERMAN SPECIALIZATION
 PRIVACY AND HUMAN HELP
 - Never request passwords, login codes, bank credentials or sensitive authentication data.
 - If a user wants to speak with Mrs. Daki or the account owner, understand the intent semantically across languages, dialects, slang, indirect requests, spelling mistakes and paraphrases. Do not rely only on exact keywords. The application performs the handoff separately; never claim it has happened unless the application confirms it.
-- Give complete, coherent and useful answers. Never intentionally cut an answer in the middle of a sentence, paragraph, list item or explanation. Respect the detail requested by the user. When a requested answer is too long for one Telegram message, the application will split it into ordered, coherent parts; continue from the exact stopping point when the user asks to continue.
+- Give complete, coherent and useful answers. Never intentionally cut an answer in the middle of a sentence, paragraph, list item or explanation. Respect the detail requested by the user. When a requested answer is too long for one Telegram message, the application will send all ordered, coherent parts automatically without cutting the answer off; preserve the exact sequence across parts.
 
 OUTPUT FORMAT
 Respond directly in natural language. Do not wrap your answer in JSON, XML, or code
@@ -161,6 +162,11 @@ const ADMIN_COMMANDS = [
   { name: 'logs', category: 'maintenance', labels: { ar: 'سجل العمليات', en: 'Activity logs', de: 'Aktivitätsprotokoll', zh: '操作日志' } }
 ];
 
+const CHAT_ONLY_COMMANDS = new Set(["ban","unban","warn","mute","userinfo","searchuser","userhistory","forgetuser","reason","groupinfo","restore"]);
+const WEB_COMMANDS = new Set(ADMIN_COMMANDS.map(c => c.name).filter(name =>
+  !CHAT_ONLY_COMMANDS.has(name) && !["admin","adminhelp","addinstruction","editinstruction","delinstruction","addadmin","removeadmin","addowner","removeowner","permissions","setpermissions","groupmode","groupenable","groupdisable"].includes(name)
+));
+
 const ADMIN_HTML = `<!doctype html>
 <html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"><meta name="theme-color" content="#0b1020"><title>DAKI Control Center</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
@@ -209,8 +215,8 @@ html,body{width:100%;min-width:0;overflow-x:hidden}body{padding-bottom:calc(76px
  function table(headers,rows){return '<div class="tablewrap"><table class="table"><thead><tr>'+headers.map(h=>'<th>'+h+'</th>').join('')+'</tr></thead><tbody>'+ (rows||[]).join('')+'</tbody></table></div>';}
  function noData(){return '<div class="empty">'+t('noData')+'</div>';}
  async function open(section){state.section=section;nav();title();const host=document.getElementById('body');host.innerHTML='<div class="empty">'+t('refresh')+'...</div>';try{if(section==='overview')await overview(host);if(section==='users')await users(host);if(section==='groups')await groups(host);if(section==='admins')await admins(host);if(section==='memory')await memory(host);if(section==='stats')await stats(host);if(section==='backup')backup(host);if(section==='settings')await settings(host);}catch(e){host.innerHTML='<div class="panel error">'+esc(e.message)+'</div>';}}
- async function overview(host){const r=await api('overview');state.commands=r.commands||[];const o=r.overview;host.innerHTML='<div class="hero"><h2>'+t('welcome')+'</h2><p>'+t('welcomeSub')+'</p></div><div class="metrics">'+[['userCount',o.users],['groupCount',o.groups],['adminCount',o.admins],['errorCount',o.errors]].map(x=>'<div class="metric"><span>'+t(x[0])+'</span><strong>'+x[1]+'</strong></div>').join('')+'</div><div class="head"><div><h2>'+t('system')+'</h2></div><button class="btn" id="refresh">'+t('refresh')+'</button></div><div class="grid">'+[['database',o.db],['ai',o.ai],['token',o.token],['botEnabled',o.bot_enabled]].map(x=>'<div class="panel"><span>'+t(x[0])+'</span><div class="status"><i class="dot"></i>'+(x[1]?t('enabled'):t('disabled'))+'</div></div>').join('')+'</div><div class="head"><div><h2>'+t('commands')+'</h2><p>'+t('commandsDesc')+'</p></div></div><div class="commandgrid">'+state.commands.map(c=>'<div class="command"><b>'+esc((c.labels&&c.labels[state.lang])||c.labels.ar)+'</b><code>/'+esc(c.name)+'</code></div>').join('')+'</div>';
- host.querySelector('#refresh').onclick=()=>open('overview');}
+ async function overview(host){const r=await api('overview');state.commands=r.commands||[];const o=r.overview;host.innerHTML='<div class="hero"><h2>'+t('welcome')+'</h2><p>'+t('welcomeSub')+'</p></div><div class="metrics">'+[['userCount',o.users],['groupCount',o.groups],['adminCount',o.admins],['errorCount',o.errors]].map(x=>'<div class="metric"><span>'+t(x[0])+'</span><strong>'+x[1]+'</strong></div>').join('')+'</div><div class="head"><div><h2>'+t('system')+'</h2></div><button class="btn" id="refresh">'+t('refresh')+'</button></div><div class="grid">'+[['database',o.db],['ai',o.ai],['token',o.token],['botEnabled',o.bot_enabled]].map(x=>'<div class="panel"><span>'+t(x[0])+'</span><div class="status"><i class="dot"></i>'+(x[1]?t('enabled'):t('disabled'))+'</div></div>').join('')+'</div><div class="head"><div><h2>'+t('commands')+'</h2><p>'+t('commandsDesc')+'</p></div></div><div class="commandgrid">'+state.commands.map(c=>'<div class="command"><b>'+esc((c.labels&&c.labels[state.lang])||c.labels.ar)+'</b><code>/'+esc(c.name)+'</code>'+(c.web_enabled?'<button class="btn" data-run-command="'+esc(c.name)+'">تنفيذ</button>':'<small>يتطلب المحادثة</small>')+'</div>').join('')+'</div>';
+ host.querySelector('#refresh').onclick=()=>open('overview');host.querySelectorAll('[data-run-command]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{const r=await api('runCommand',{name:b.dataset.runCommand});toast(r.message||t('saved'));}catch(e){toast(e.message,true);}finally{b.disabled=false;}});}
  async function users(host){const r=await api('usersList');const rows=r.users||[];host.innerHTML='<div class="head"><div><h2>'+t('users')+'</h2><p>'+rows.length+' / 100</p></div><input class="input" id="uq" placeholder="'+t('search')+'"></div><div id="utable"></div>';const draw=list=>{document.getElementById('utable').innerHTML=list.length?table([t('name'),t('id'),t('language'),t('lastSeen'),t('actions')],list.map(u=>'<tr><td>'+esc(u.first_name||'—')+'<small>'+esc(u.username?'@'+u.username:'')+'</small></td><td class="ltr">'+esc(u.user_id)+'</td><td>'+esc(u.language||'—')+'</td><td>'+esc(u.last_seen||'—')+'</td><td><button class="btn '+(u.is_blocked?'':'danger')+'" data-toggle="'+esc(u.user_id)+'" data-blocked="'+(u.is_blocked?'1':'0')+'">'+t(u.is_blocked?'unblock':'block')+'</button> <button class="btn" data-forget="'+esc(u.user_id)+'">'+t('forget')+'</button></td></tr>')):noData();};draw(rows);host.querySelector('#uq').oninput=e=>{const q=e.target.value.toLowerCase();draw(rows.filter(u=>[u.user_id,u.username,u.first_name].join(' ').toLowerCase().includes(q)));};host.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=async()=>{try{await api(b.dataset.blocked==='1'?'userUnblock':'userBlock',{user_id:b.dataset.toggle});toast(t('saved'));open('users');}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-forget]').forEach(b=>b.onclick=async()=>{if(!confirm(t('confirm')))return;try{await api('userForget',{user_id:b.dataset.forget});toast(t('saved'));open('users');}catch(e){toast(e.message,true);}});}
  async function groups(host){const r=await api('groupsList');const rows=r.groups||[];host.innerHTML='<div class="head"><div><h2>'+t('groups')+'</h2><p>'+rows.length+'</p></div></div>'+ (rows.length?rows.map(g=>'<div class="rowcard"><div class="meta"><strong>'+esc(g.title||g.chat_id)+'</strong><small class="ltr">'+esc(g.chat_id)+'</small><small>'+t('status')+': '+t(g.enabled?'enabled':'disabled')+'</small></div><div class="tools"><select class="select" data-mode="'+esc(g.chat_id)+'"><option value="mention" '+(g.mode==='mention'?'selected':'')+'>'+t('mention')+'</option><option value="all" '+(g.mode==='all'?'selected':'')+'>'+t('all')+'</option></select><button class="btn" data-enable="'+esc(g.chat_id)+'" data-on="'+(g.enabled?'1':'0')+'">'+t(g.enabled?'disabled':'enabled')+'</button></div></div>').join(''):noData());host.querySelectorAll('[data-mode]').forEach(el=>el.onchange=async()=>{try{await api('groupUpdate',{chat_id:el.dataset.mode,mode:el.value});toast(t('saved'));}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-enable]').forEach(b=>b.onclick=async()=>{try{await api('groupUpdate',{chat_id:b.dataset.enable,enabled:b.dataset.on!=='1'});toast(t('saved'));open('groups');}catch(e){toast(e.message,true);}});}
  async function admins(host){const r=await api('adminsList');const rows=r.admins||[];host.innerHTML='<div class="panel"><div class="head"><h2>'+t('add')+' '+t('admin')+'</h2></div><div class="tools"><input class="input ltr" id="newAdmin" placeholder="Telegram ID"><select class="select" id="newRole"><option value="admin">'+t('admin')+'</option><option value="owner">'+t('owner')+'</option></select><button class="btn primary" id="addAdmin">'+t('add')+'</button></div></div><div id="alist"></div>';document.getElementById('alist').innerHTML=rows.length?rows.map(a=>'<div class="rowcard"><div class="meta"><strong class="ltr">'+esc(a.user_id)+'</strong><small>'+esc(a.role)+' · '+esc(a.permissions_json||'{}')+'</small></div><div class="tools">'+(String(a.user_id)===OWNER?'': '<button class="btn" data-perms="'+esc(a.user_id)+'">'+t('permissions')+'</button><button class="btn danger" data-remove="'+esc(a.user_id)+'">'+t('remove')+'</button>')+'</div></div>').join(''):noData();document.getElementById('addAdmin').onclick=async()=>{const id=document.getElementById('newAdmin').value.trim();try{await api('adminAdd',{user_id:id,role:document.getElementById('newRole').value});toast(t('saved'));open('admins');}catch(e){toast(e.message,true);}};host.querySelectorAll('[data-remove]').forEach(b=>b.onclick=async()=>{if(!confirm(t('confirm')))return;try{await api('adminRemove',{user_id:b.dataset.remove});toast(t('saved'));open('admins');}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-perms]').forEach(b=>b.onclick=async()=>{const value=prompt('control, users, moderation, ai, admins, groups, stats, maintenance');if(value===null)return;try{await api('adminPermissions',{user_id:b.dataset.perms,permissions:value.split(',').map(x=>x.trim()).filter(Boolean)});toast(t('saved'));open('admins');}catch(e){toast(e.message,true);}});}
@@ -267,7 +273,7 @@ function markdownInlineToHtml(value) {
   return out;
 }
 function formatTelegramHtml(value) {
-  const lines = String(value || "").slice(0, 3300).split(/\r?\n/);
+  const lines = String(value || "").split(/\r?\n/);
   const output = [];
   let inCode = false;
   let codeLines = [];
@@ -293,7 +299,7 @@ function formatTelegramHtml(value) {
     else output.push(markdownInlineToHtml(line));
   }
   if (inCode) output.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
-  return output.join("\n").slice(0, 4000);
+  return output.join("\n");
 }
 function handoffStateKey(msg, actorId, business) {
   return `handoff:${business ? (msg.business_connection_id || "business") : "bot"}:${msg.chat.id}:${actorId}`;
@@ -301,6 +307,9 @@ function handoffStateKey(msg, actorId, business) {
 
 function continuationStateKey(msg, actorId, business) {
   return `continuation:${business ? (msg.business_connection_id || "business") : "bot"}:${msg.chat.id}:${actorId}`;
+}
+function assistantPauseStateKey(msg, actorId, business) {
+  return `assistant_pause:${business ? (msg.business_connection_id || "business") : "bot"}:${msg.chat.id}:${actorId}`;
 }
 function isContinueRequest(value) {
   const s = String(value || "").trim().toLowerCase().replace(/[،,؛;.!؟?]+$/g, "").trim();
@@ -396,10 +405,14 @@ async function detectHumanHandoffIntent(env, userText, history = []) {
   // Fail closed on AI/service failure; never substitute brittle phrase matching.
   return false;
 }
+function assistantControlKeyboard(paused = false) {
+  return { inline_keyboard: [[{ text: paused ? "تشغيل المساعد" : "إيقاف المساعد", callback_data: paused ? "user:resume" : "user:pause" }]] };
+}
 async function sendAnswerPart(env, chatId, part, msg, business, hasMore) {
-  const suffix = hasMore ? "\n\nللمتابعة من حيث توقفت، أرسل «نعم» أو «أكمل»." : "";
-  const content = formatTelegramHtml(part + suffix);
-  await sendMessage(env, chatId, content, { ...replyOptions(msg, business), parse_mode: "HTML" });
+  const content = formatTelegramHtml(part);
+  await sendMessage(env, chatId, content, {
+    ...replyOptions(msg, business), parse_mode: "HTML", reply_markup: assistantControlKeyboard(false)
+  });
 }
 function getUserId(from) { return from?.id == null ? "" : String(from.id); }
 function isPrivate(chat) { return chat?.type === "private"; }
@@ -435,7 +448,7 @@ async function runAIWithRetry(env, messages) {
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const result = await env.AI.run(MODEL, { messages, max_tokens: 900 });
+      const result = await env.AI.run(MODEL, { messages, max_tokens: 2048 });
       return parseAIResponse(result);
     } catch (error) {
       lastError = error;
@@ -565,6 +578,14 @@ async function handleAdminApi(request, env) {
   const actorId = String(verified.user.id);
   if (actorId !== OWNER_ID) return json({ ok: false, error: "هذا الحساب غير مخوّل لإدارة DAKI." }, 403);
   const action = String(body?.action || "");
+  if (action === "runCommand") {
+    const name = String(body?.name || "").toLowerCase();
+    if (!WEB_COMMANDS.has(name) || CHAT_ONLY_COMMANDS.has(name)) return json({ ok: false, error: "هذا الأمر يتطلب تنفيذه داخل المحادثة أو يحتاج إلى بيانات إضافية." }, 400);
+    const fakeMsg = { chat: { id: Number(OWNER_ID), type: "private" }, from: verified.user, text: "/" + name };
+    const handled = await commandReply(env, fakeMsg, false, actorId, { name, args: "" });
+    if (!handled) return json({ ok: false, error: "لا يوجد معالج لهذا الأمر." }, 400);
+    return json({ ok: true, message: "تم تنفيذ الأمر. راجع محادثتك مع DAKI." });
+  }
   const backupTables = ["users","conversations","messages","learning_profiles","recurring_mistakes",
     "admins","admin_custom_commands","blocked_users","warnings","groups","bot_settings","instructions",
     "audit_logs","alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state"];
@@ -578,7 +599,7 @@ async function handleAdminApi(request, env) {
       ]);
       return json({ ok: true, overview: { users, groups, admins: admins + 1, errors,
         bot_enabled: enabled === "1", maintenance: maintenance === "1", db: true,
-        ai: !!env.AI?.run, token: !!env.TELEGRAM_BOT_TOKEN, version: VERSION }, commands: ADMIN_COMMANDS });
+        ai: !!env.AI?.run, token: !!env.TELEGRAM_BOT_TOKEN, version: VERSION }, commands: ADMIN_COMMANDS.map(c => ({ ...c, web_enabled: WEB_COMMANDS.has(c.name) })) });
     }
     if (action === "usersList") {
       const q = safeString(body.q || "", 100).trim();
@@ -899,7 +920,7 @@ async function aiReply(env, conversationId, userId, userText) {
 }
 function welcomeMarker(connectionId) {
   // Version the marker so existing users receive the redesigned welcome once after this upgrade.
-  return `${connectionId || ""}|welcome-2.5.6`;
+  return `${connectionId || ""}|welcome-2.5.7`;
 }
 async function hasWelcomed(env, chatId, userId, connectionId) {
   const row = await env.DB.prepare(
@@ -933,13 +954,12 @@ function replyOptions(msg, business) {
   return options;
 }
 async function isGroupAllowed(env, chatId, textMessage, replyTo) {
-  const row = await env.DB.prepare("SELECT enabled,mode FROM groups WHERE chat_id=?")
+  const row = await env.DB.prepare("SELECT enabled FROM groups WHERE chat_id=?")
     .bind(String(chatId)).first();
   if (row?.enabled === 0) return false;
-  const mode = row?.mode || "mention";
-  if (mode === "all") return true;
-  const mention = new RegExp(`@${BOT_USERNAME}\\b`, "i").test(textMessage || "");
-  const reply = replyTo?.from?.username?.toLowerCase() === BOT_USERNAME.toLowerCase();
+  const mention = new RegExp(`@${OWNER_USERNAME}\\b`, "i").test(textMessage || "");
+  const replyUsername = String(replyTo?.from?.username || replyTo?.sender_chat?.username || "").replace(/^@/, "").toLowerCase();
+  const reply = replyUsername === OWNER_USERNAME.toLowerCase();
   return mention || reply;
 }
 async function upsertGroup(env, chat) {
@@ -1435,6 +1455,32 @@ async function handleCallback(env, query) {
     });
     return;
   }
+  if (data === "user:pause" || data === "user:resume") {
+    if (!message || !chatId || !query?.from) {
+      await answerCallback(env, query.id, "تعذر تحديد المحادثة.");
+      return;
+    }
+    const callbackMsg = { ...message, business_connection_id: businessConnectionId };
+    const pauseKey = assistantPauseStateKey(callbackMsg, actorId, !!businessConnectionId);
+    if (data === "user:pause") {
+      await env.DB.prepare(`INSERT INTO daki_state(state_key,state_value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at=CURRENT_TIMESTAMP`)
+        .bind(pauseKey, "1").run();
+      await answerCallback(env, query.id, "تم إيقاف المساعد في هذه المحادثة.");
+      await sendMessage(env, chatId, "تم إيقاف المساعد في هذه المحادثة. يمكنك تشغيله من الزر أدناه.", {
+        ...(businessConnectionId ? { business_connection_id: businessConnectionId } : {}),
+        reply_markup: assistantControlKeyboard(true)
+      });
+    } else {
+      await env.DB.prepare("DELETE FROM daki_state WHERE state_key=?").bind(pauseKey).run();
+      await answerCallback(env, query.id, "تم تشغيل المساعد.");
+      await sendMessage(env, chatId, "عاد مساعد DAKI إلى العمل. أرسل رسالتك التالية للمتابعة.", {
+        ...(businessConnectionId ? { business_connection_id: businessConnectionId } : {}),
+        reply_markup: assistantControlKeyboard(false)
+      });
+    }
+    return;
+  }
   if (!(await hasPermission(env, actorId, "admin"))) {
     await answerCallback(env, query.id, "غير مصرح لك.");
     return;
@@ -1539,10 +1585,14 @@ async function handleMessage(env, msg, business) {
   const command = parseCommand(messageText);
   const stateKey = handoffStateKey(msg, actorId, business);
   if (command?.name === "bot") {
-    await env.DB.prepare("DELETE FROM daki_state WHERE state_key=?").bind(stateKey).run();
+    await env.DB.prepare("DELETE FROM daki_state WHERE state_key=? OR state_key=?")
+      .bind(stateKey, assistantPauseStateKey(msg, actorId, business)).run();
     await sendMessage(env, chatId, "عاد مساعد DAKI إلى العمل. كيف يمكنني مساعدتك؟", replyOptions(msg, business));
     return;
   }
+  const userPauseKey = assistantPauseStateKey(msg, actorId, business);
+  const userPause = await env.DB.prepare("SELECT state_value FROM daki_state WHERE state_key=?").bind(userPauseKey).first();
+  if (userPause && !ADMIN_COMMANDS.some(item => item.name === command?.name)) return;
   if (actorId !== OWNER_ID) {
     const paused = await env.DB.prepare("SELECT state_value FROM daki_state WHERE state_key=?").bind(stateKey).first();
     if (paused && Number(paused.state_value) > nowTs()) return;
@@ -1660,21 +1710,18 @@ async function handleMessage(env, msg, business) {
   try {
     const parsed = await aiReply(env, conversation.id, actorId, messageText);
     const answer = String(parsed.reply || "").trim();
-    const parts = splitAnswerCoherently(answer, 2500);
+    const parts = splitAnswerCoherently(answer, 2800);
     if (!parts.length) throw new Error("DAKI returned an empty answer");
-    const firstPart = parts.shift();
-    if (parts.length) {
-      await env.DB.prepare(`INSERT INTO daki_state(state_key,state_value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
-        ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at=CURRENT_TIMESTAMP`)
-        .bind(continuationKey, JSON.stringify(parts)).run();
-    }
-    try {
-      await sendAnswerPart(env, chatId, firstPart, msg, business, parts.length > 0);
-    } catch (formatError) {
-      if (/parse entities|can't parse|unsupported start tag|unsupported end tag/i.test(String(formatError?.message || formatError))) {
-        await sendMessage(env, chatId, firstPart + (parts.length ? "\n\nللمتابعة من حيث توقفت، أرسل «نعم» أو «أكمل»." : ""), replyOptions(msg, business));
-      } else {
-        throw formatError;
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) await new Promise(resolve => setTimeout(resolve, 1100));
+      try {
+        await sendAnswerPart(env, chatId, parts[i], msg, business, i < parts.length - 1);
+      } catch (formatError) {
+        if (/parse entities|can't parse|unsupported start tag|unsupported end tag/i.test(String(formatError?.message || formatError))) {
+          await sendMessage(env, chatId, parts[i], { ...replyOptions(msg, business), reply_markup: assistantControlKeyboard(false) });
+        } else {
+          throw formatError;
+        }
       }
     }
   } catch (e) {
