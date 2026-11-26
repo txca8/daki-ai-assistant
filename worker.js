@@ -1,6 +1,6 @@
 /*
  * DAKI Telegram Business + Group Assistant
- * Version: 2.5.0
+ * Version: 2.5.4
  * Cloudflare Worker bindings:
  *   AI  - Workers AI
  *   DB  - D1 database (daki-db)
@@ -16,7 +16,7 @@
  *   personal Telegram account.
  */
 
-const VERSION = "2.5.0";
+const VERSION = "2.5.4";
 const BOT_USERNAME = "DakiSchuleBot";
 const CHANNEL = "@DakiSchule";
 const CHANNEL_URL = "https://t.me/DakiSchule";
@@ -63,7 +63,8 @@ GERMAN SPECIALIZATION
 
 PRIVACY AND HUMAN HELP
 - Never request passwords, login codes, bank credentials or sensitive authentication data.
-- If a user explicitly asks to speak with Mrs. Daki or the account owner, do not claim that a human has been contacted unless the system has actually delivered a notification. The application handles this handoff separately. Otherwise answer directly.
+- If a user wants to speak with Mrs. Daki or the account owner, understand the intent semantically across languages, dialects, slang, indirect requests, spelling mistakes and paraphrases. Do not rely only on exact keywords. The application performs the handoff separately; never claim it has happened unless the application confirms it.
+- Give complete, coherent answers. Never intentionally cut an answer in the middle of a sentence, paragraph, list item or explanation. If a response is too long for one Telegram message, the application will deliver it in coherent parts and ask whether the user wants the next part.
 
 OUTPUT FORMAT
 Respond directly in natural language. Do not wrap your answer in JSON, XML, or code
@@ -297,6 +298,76 @@ function formatTelegramHtml(value) {
 function handoffStateKey(msg, actorId, business) {
   return `handoff:${business ? (msg.business_connection_id || "business") : "bot"}:${msg.chat.id}:${actorId}`;
 }
+
+function continuationStateKey(msg, actorId, business) {
+  return `continuation:${business ? (msg.business_connection_id || "business") : "bot"}:${msg.chat.id}:${actorId}`;
+}
+function isContinueRequest(value) {
+  const s = String(value || "").trim().toLowerCase().replace(/[،,؛;.!؟?]+$/g, "").trim();
+  if (!s) return false;
+  return /^(?:(?:نعم|اي|إي|أيوه|ايوه|اه|أجل|أكيد|تمام|حسناً|حسنا|yes|yeah|yep|sure|okay|ok|ja|gerne|好的|是的)(?:\s+|$))?(?:اكمل|أكمل|كمّل|كمل|تابع|استمر|واصل|كمل من حيث توقفت|أكمل من حيث توقفت|تابع من فضلك|continue|go on|next|please continue|weiter|mach weiter|fortfahren|继续|继续吧)?$/i.test(s)
+    || /^(نعم|اي|إي|أيوه|ايوه|اه|أجل|أكيد|تمام|حسناً|حسنا|yes|yeah|yep|sure|okay|ok|ja|gerne|好的|是的)$/i.test(s);
+}
+function splitAnswerCoherently(value, maxLength = 2500) {
+  const text = String(value || "").trim();
+  if (!text) return [];
+  const chunks = [];
+  let rest = text;
+  while (rest.length > maxLength) {
+    let cut = -1;
+    const window = rest.slice(0, maxLength + 1);
+    // Prefer a paragraph boundary, then a sentence boundary, then a word boundary.
+    const paragraph = window.lastIndexOf("\n\n");
+    if (paragraph >= Math.floor(maxLength * 0.45)) cut = paragraph;
+    if (cut < 0) {
+      const sentenceMatches = [...window.matchAll(/[.!؟?。]\s+/g)];
+      const lastSentence = sentenceMatches[sentenceMatches.length - 1];
+      if (lastSentence && lastSentence.index >= Math.floor(maxLength * 0.45)) {
+        cut = lastSentence.index + lastSentence[0].length;
+      }
+    }
+    if (cut < 0) {
+      const space = window.lastIndexOf(" ");
+      if (space >= Math.floor(maxLength * 0.45)) cut = space;
+    }
+    if (cut < 1) cut = maxLength;
+    const part = rest.slice(0, cut).trim();
+    if (part) chunks.push(part);
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+async function detectHumanHandoffIntent(env, userText) {
+  // Semantic intent detection: supports paraphrases, colloquial speech and multilingual requests.
+  // Fail closed to the existing conservative pattern detector if Workers AI is unavailable.
+  try {
+    const result = await env.AI.run(MODEL, {
+      messages: [
+        { role: "system", content: "Classify the user's intent. Return ONLY valid JSON: {\"wants_human\":true} or {\"wants_human\":false}. Set true only when the user is asking, directly or indirectly, to personally speak/contact/reach the account owner, Mrs. Daki, or a human representative. Understand all languages, dialects, slang, misspellings, polite hints and paraphrases. Set false for merely mentioning Daki, asking about Daki, asking the bot to explain something, or quoting another person's request. Do not answer the user." },
+        { role: "user", content: String(userText || "").slice(0, 1800) }
+      ],
+      max_tokens: 80
+    });
+    let raw = result?.response ?? result?.choices?.[0]?.message?.content ?? result?.result?.response ?? "";
+    if (typeof raw !== "string") raw = JSON.stringify(raw ?? {});
+    const match = raw.match(/\{[\s\S]*?\}/);
+    if (match) {
+      const parsed = JSON.parse(match[0]);
+      if (typeof parsed.wants_human === "boolean") return parsed.wants_human;
+    }
+    if (/\btrue\b/i.test(raw) && !/\bfalse\b/i.test(raw)) return true;
+    if (/\bfalse\b/i.test(raw)) return false;
+  } catch (error) {
+    console.error("Handoff intent classification failed:", safeString(error?.message || error, 400));
+  }
+  return isHumanHandoffRequest(userText);
+}
+async function sendAnswerPart(env, chatId, part, msg, business, hasMore) {
+  const suffix = hasMore ? "\n\nهل تريد أن أكمل؟ أرسل «نعم» لأتابع من حيث توقفت." : "";
+  const content = formatTelegramHtml(part + suffix);
+  await sendMessage(env, chatId, content, { ...replyOptions(msg, business), parse_mode: "HTML" });
+}
 function isHumanHandoffRequest(value) {
   const s = String(value || "").toLowerCase();
   const arabic = /(اريد|أريد|ابغى|احتاج|أحتاج|خليني|دعني).{0,35}(اتحدث|أتحدث|التحدث|أتكلم|اكلم|أكلم|التكلم|اتواصل|أتواصل|اتصل|أقابل).{0,35}(المالك|المالكة|صاحب الحساب|صاحبة الحساب|السيدة|مدام|مس داكي|داكي|daki)/.test(s);
@@ -332,7 +403,7 @@ function parseAIResponse(result) {
     } catch (_) { /* Treat malformed wrapper as ordinary text below. */ }
   }
   cleaned = cleaned.replace(/^\s*["']?reply["']?\s*:\s*/i, "").trim();
-  return { reply: cleaned.slice(0, MAX_TELEGRAM_TEXT), need_human: false };
+  return { reply: cleaned.slice(0, 18000), need_human: false };
 }
 async function runAIWithRetry(env, messages) {
   const attempts = 3;
@@ -1421,16 +1492,38 @@ async function handleMessage(env, msg, business) {
     if (paused && Number(paused.state_value) > nowTs()) return;
     if (paused) await env.DB.prepare("DELETE FROM daki_state WHERE state_key=?").bind(stateKey).run();
   }
+  const continuationKey = continuationStateKey(msg, actorId, business);
+  const pendingContinuation = await env.DB.prepare("SELECT state_value FROM daki_state WHERE state_key=?").bind(continuationKey).first();
+  if (pendingContinuation) {
+    let pending = [];
+    try { pending = JSON.parse(pendingContinuation.state_value || "[]"); } catch (_) {}
+    if (Array.isArray(pending) && pending.length && isContinueRequest(messageText)) {
+      const nextPart = String(pending.shift() || "");
+      if (pending.length) {
+        await env.DB.prepare("UPDATE daki_state SET state_value=?,updated_at=CURRENT_TIMESTAMP WHERE state_key=?")
+          .bind(JSON.stringify(pending), continuationKey).run();
+      } else {
+        await env.DB.prepare("DELETE FROM daki_state WHERE state_key=?").bind(continuationKey).run();
+      }
+      await sendAnswerPart(env, chatId, nextPart, msg, business, pending.length > 0);
+      return;
+    }
+    // A different message starts a new request; discard the old continuation.
+    await env.DB.prepare("DELETE FROM daki_state WHERE state_key=?").bind(continuationKey).run();
+  }
   if (business && command?.name === "start") return;
   if (!business && !isGroup && command?.name === "start") {
     await sendMessage(env, chatId,
-      "مرحباً بك في Daki-Schule.\n\nأنا DAKI، مساعدك للمعلومات والتعلّم والإجابة عن أسئلتك. اكتب رسالتك وسأكون هنا لمساعدتك.",
+      "أهلاً وسهلاً بك في Daki-Schule! أنا DAKI، مساعدك الذكي. يسعدني مساعدتك في أسئلتك وتعلّمك وأي موضوع تحتاج إليه. اكتب لي ما تريد وسنبدأ.",
       { ...replyOptions(msg, false), reply_markup: { inline_keyboard: [[{ text: "Daki Schule", url: CHANNEL_URL }]] } });
     await env.DB.prepare("INSERT OR IGNORE INTO welcome_events(user_id,chat_id,connection_id) VALUES(?,?, '')")
       .bind(actorId, String(chatId)).run();
     return;
   }
-  if (!command && actorId !== OWNER_ID && isHumanHandoffRequest(messageText)) {
+  if (!command && !isGroup && actorId !== OWNER_ID) {
+    await welcomeOnce(env, chatId, actorId, connectionId, business);
+  }
+  if (!command && actorId !== OWNER_ID && await detectHumanHandoffIntent(env, messageText)) {
     const displayName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(" ") || "غير معروف";
     const username = msg.from.username ? "@" + msg.from.username : "بدون اسم مستخدم";
     const contextLabel = business ? "Telegram Business" : (isGroup ? "مجموعة" : "محادثة البوت");
@@ -1500,13 +1593,20 @@ async function handleMessage(env, msg, business) {
   const conversation = await getConversation(env, key, chatId, actorId, connectionId, msg.chat.type);
   try {
     const parsed = await aiReply(env, conversation.id, actorId, messageText);
-    const answer = parsed.reply;
-    const options = replyOptions(msg, business);
+    const answer = String(parsed.reply || "").trim();
+    const parts = splitAnswerCoherently(answer, 2500);
+    if (!parts.length) throw new Error("DAKI returned an empty answer");
+    const firstPart = parts.shift();
+    if (parts.length) {
+      await env.DB.prepare(`INSERT INTO daki_state(state_key,state_value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at=CURRENT_TIMESTAMP`)
+        .bind(continuationKey, JSON.stringify(parts)).run();
+    }
     try {
-      await sendMessage(env, chatId, formatTelegramHtml(answer), { ...options, parse_mode: "HTML" });
+      await sendAnswerPart(env, chatId, firstPart, msg, business, parts.length > 0);
     } catch (formatError) {
       if (/parse entities|can't parse|unsupported start tag|unsupported end tag/i.test(String(formatError?.message || formatError))) {
-        await sendMessage(env, chatId, answer, options);
+        await sendMessage(env, chatId, firstPart + (parts.length ? "\n\nهل تريد أن أكمل؟ أرسل «نعم» لأتابع من حيث توقفت." : ""), replyOptions(msg, business));
       } else {
         throw formatError;
       }
