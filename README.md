@@ -26,3 +26,4 @@ The Worker creates the additional tables with `CREATE TABLE IF NOT EXISTS` throu
 ## Validation
 
 The edited Worker, command module, and embedded Mini App JavaScript were syntax-checked. Basic Worker route smoke tests and new-table SQL syntax checks passed. No Cloudflare deployment or Telegram configuration change was performed.
+Preview build trigger
