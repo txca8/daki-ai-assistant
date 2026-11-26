@@ -688,7 +688,7 @@ async function handleAdminApi(request, env) {
     if (action === "adminRoleSet") {
       const id = String(body.user_id || "").trim();
       const role = String(body.role || "");
-      if (!/^\\d+$/.test(id) || id === OWNER_ID || !Object.prototype.hasOwnProperty.call(RBAC_ROLES, role)) return json({ ok: false, error: "بيانات الرتبة غير صالحة." }, 400);
+      if (!/^\d+$/.test(id) || id === OWNER_ID || !Object.prototype.hasOwnProperty.call(RBAC_ROLES, role)) return json({ ok: false, error: "بيانات الرتبة غير صالحة." }, 400);
       if (role === "owner" && actorId !== OWNER_ID) return json({ ok: false, error: "إنشاء أو منح رتبة المالك المفوض متاح للمالك الرئيسي فقط." }, 403);
       const target = await getAdmin(env, id);
       if (!target) return json({ ok: false, error: "المستخدم المستهدف ليس مسؤولاً مسجلاً." }, 404);
