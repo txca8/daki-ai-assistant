@@ -156,6 +156,41 @@ export function authorizeCommand(name, permissions = {}, isOwner = false) {
     : { allowed: false, reason: "missing_permission", required };
 }
 
+async function deleteUserPersonalData(env, userId, ownerId) {
+  const id = String(userId || "").trim();
+  if (!/^\d+$/.test(id) || id === String(ownerId)) {
+    throw new Error("معرّف المستخدم غير صالح أو محمي.");
+  }
+
+  const suffix = `:${id}`;
+  const stateRows = await env.DB.prepare(`
+    SELECT state_key FROM daki_state
+    WHERE (
+      state_key LIKE 'handoff:%'
+      OR state_key LIKE 'continuation:%'
+      OR state_key LIKE 'assistant_pause:%'
+    )
+    AND substr(state_key, -?) = ?
+  `).bind(suffix.length, suffix).all();
+
+  const statements = [
+    env.DB.prepare("DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id=?)").bind(id),
+    env.DB.prepare("DELETE FROM conversations WHERE user_id=?").bind(id),
+    env.DB.prepare("DELETE FROM learning_profiles WHERE user_id=?").bind(id),
+    env.DB.prepare("DELETE FROM recurring_mistakes WHERE user_id=?").bind(id),
+    env.DB.prepare("DELETE FROM usage_stats WHERE user_id=?").bind(id),
+    env.DB.prepare("DELETE FROM callback_sessions WHERE user_id=?").bind(id),
+    env.DB.prepare("DELETE FROM chat_pauses WHERE user_id=?").bind(id),
+    env.DB.prepare("DELETE FROM welcome_events WHERE user_id=?").bind(id),
+    env.DB.prepare("DELETE FROM users WHERE user_id=?").bind(id),
+    ...(stateRows.results || []).map(row =>
+      env.DB.prepare("DELETE FROM daki_state WHERE state_key=?").bind(row.state_key)
+    )
+  ];
+
+  await env.DB.batch(statements);
+}
+
 async function executeCommand(env, msg, business, actorId, command, deps) {
   const { VERSION, OWNER_ID, ADMIN_URL, replyOptions, isOwner, hasPermission, sendMessage, isPrivate, getSetting, setSetting, audit, tg, sendBackup, logError } = deps;
   const chatId = msg.chat.id;
@@ -253,15 +288,14 @@ async function executeCommand(env, msg, business, actorId, command, deps) {
       case "clearmemory": {
         const id = name === "clearmemory" ? actorId : targetId;
         if (!id) { out = "رد على رسالة المستخدم بالأمر /forgetuser."; break; }
-        if (id !== actorId && !owner && !(await requirePerm("users"))) return denied(), true;
-        const convs = await env.DB.prepare("SELECT id FROM conversations WHERE user_id=?").bind(id).all();
-        for (const c of convs.results || []) {
-          await env.DB.prepare("DELETE FROM messages WHERE conversation_id=?").bind(c.id).run();
+        if (!/^\d+$/.test(String(id)) || String(id) === String(OWNER_ID)) {
+          out = "معرّف المستخدم غير صالح أو محمي؛ لا يمكن حذف بيانات المالك الرئيسي.";
+          break;
         }
-        await env.DB.prepare("DELETE FROM conversations WHERE user_id=?").bind(id).run();
-        await env.DB.prepare("DELETE FROM learning_profiles WHERE user_id=?").bind(id).run();
-        await audit(env, actorId, "forget_user", id);
-        out = "تم حذف سجل المحادثات وملف التعلم لهذا المستخدم من D1.";
+        if (id !== actorId && !owner && !(await requirePerm("users"))) return denied(), true;
+        await deleteUserPersonalData(env, id, OWNER_ID);
+        await audit(env, actorId, "forget_user", id, "", "حُذفت البيانات الشخصية والتعليمية والإحصائية والمؤقتة؛ أُبقيت سجلات الإشراف والأمان والتدقيق.");
+        out = "تم حذف البيانات الشخصية والتعليمية والإحصائية والمؤقتة من D1. أُبقيت سجلات التحذيرات والحظر والكتم والتدقيق لأسباب أمنية وإشرافية.";
         break;
       }
       case "blocked": {
