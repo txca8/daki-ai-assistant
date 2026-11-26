@@ -1,6 +1,6 @@
 /*
  * DAKI Telegram Business + Group Assistant
- * Version: 2.5.6
+ * Version: 2.5.8
  * Cloudflare Worker bindings:
  *   AI  - Workers AI
  *   DB  - D1 database (daki-db)
@@ -16,7 +16,7 @@
  *   personal Telegram account.
  */
 
-const VERSION = "2.5.7";
+const VERSION = "2.5.8";
 const BOT_USERNAME = "DakiSchuleBot";
 const OWNER_USERNAME = "Daakkiiii";
 const CHANNEL = "@DakiSchule";
@@ -309,7 +309,10 @@ function continuationStateKey(msg, actorId, business) {
   return `continuation:${business ? (msg.business_connection_id || "business") : "bot"}:${msg.chat.id}:${actorId}`;
 }
 function assistantPauseStateKey(msg, actorId, business) {
-  return `assistant_pause:${business ? (msg.business_connection_id || "business") : "bot"}:${msg.chat.id}:${actorId}`;
+  // Use one stable key for callback queries and incoming messages. Telegram may
+  // omit business_connection_id from callback_query.message, so including it
+  // can make the pause write and the later pause check use different keys.
+  return `assistant_pause:${msg.chat.id}:${actorId}`;
 }
 function isContinueRequest(value) {
   const s = String(value || "").trim().toLowerCase().replace(/[،,؛;.!؟?]+$/g, "").trim();
