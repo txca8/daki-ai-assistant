@@ -1674,4 +1674,24 @@ export default {
 
     let update;
     try { update = await request.json(); }
-    catch (_) { return text("Invalid JSON",
+    catch (_) { return text("Invalid JSON", 400); }
+
+    try {
+      await ensureSchema(env);
+      try { await ensureTelegramCommands(env); }
+      catch (commandSetupError) { await logError(env, "TELEGRAM_COMMAND_SETUP", commandSetupError); }
+      if (update.callback_query) {
+        await handleCallback(env, update.callback_query);
+      } else if (update.business_message) {
+        await handleMessage(env, update.business_message, true);
+      } else if (update.message) {
+        await handleMessage(env, update.message, false);
+      } else if (update.edited_business_message) {
+        // Ignore edits to avoid duplicate AI responses.
+      }
+    } catch (e) {
+      await logError(env, "WEBHOOK", e, "update processing failed");
+    }
+    return text("OK", 200);
+  }
+};
