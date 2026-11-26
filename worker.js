@@ -617,12 +617,12 @@ async function handleAdminApi(request, env) {
     if (action === "userForget") {
       const id = String(body.user_id || "").trim();
       if (!/^\d+$/.test(id) || id === OWNER_ID) return json({ ok: false, error: "معرّف المستخدم غير صالح أو محمي." }, 400);
-      const convs = await env.DB.prepare("SELECT id FROM conversations WHERE user_id=?").bind(id).all();
-      for (const c of convs.results || []) await env.DB.prepare("DELETE FROM messages WHERE conversation_id=?").bind(c.id).run();
-      await env.DB.prepare("DELETE FROM conversations WHERE user_id=?").bind(id).run();
-      await env.DB.prepare("DELETE FROM learning_profiles WHERE user_id=?").bind(id).run();
-      await env.DB.prepare("DELETE FROM recurring_mistakes WHERE user_id=?").bind(id).run().catch(() => {});
-      await audit(env, actorId, "user_forget_from_miniapp", id);
+      try {
+        await deleteUserPersonalData(env, id);
+      } catch (error) {
+        return json({ ok: false, error: error?.message || "تعذر حذف بيانات المستخدم." }, 400);
+      }
+      await audit(env, actorId, "user_forget_from_miniapp", id, "", "حُذفت البيانات الشخصية والتعليمية والإحصائية والمؤقتة؛ أُبقيت سجلات الإشراف والأمان والتدقيق.");
       return json({ ok: true });
     }
     if (action === "groupCommandsGet") {
@@ -913,6 +913,41 @@ async function setSetting(env, key, value, actor = OWNER_ID) {
     updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`)
     .bind(key, String(value), String(actor)).run();
 }
+async function deleteUserPersonalData(env, userId) {
+  const id = String(userId || "").trim();
+  if (!/^\d+$/.test(id) || id === OWNER_ID) {
+    throw new Error("معرّف المستخدم غير صالح أو محمي.");
+  }
+
+  const suffix = `:${id}`;
+  const stateRows = await env.DB.prepare(`
+    SELECT state_key FROM daki_state
+    WHERE (
+      state_key LIKE 'handoff:%'
+      OR state_key LIKE 'continuation:%'
+      OR state_key LIKE 'assistant_pause:%'
+    )
+    AND substr(state_key, -?) = ?
+  `).bind(suffix.length, suffix).all();
+
+  const statements = [
+    env.DB.prepare("DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id=?)").bind(id),
+    env.DB.prepare("DELETE FROM conversations WHERE user_id=?").bind(id),
+    env.DB.prepare("DELETE FROM learning_profiles WHERE user_id=?").bind(id),
+    env.DB.prepare("DELETE FROM recurring_mistakes WHERE user_id=?").bind(id),
+    env.DB.prepare("DELETE FROM usage_stats WHERE user_id=?").bind(id),
+    env.DB.prepare("DELETE FROM callback_sessions WHERE user_id=?").bind(id),
+    env.DB.prepare("DELETE FROM chat_pauses WHERE user_id=?").bind(id),
+    env.DB.prepare("DELETE FROM welcome_events WHERE user_id=?").bind(id),
+    env.DB.prepare("DELETE FROM users WHERE user_id=?").bind(id),
+    ...(stateRows.results || []).map(row =>
+      env.DB.prepare("DELETE FROM daki_state WHERE state_key=?").bind(row.state_key)
+    )
+  ];
+
+  await env.DB.batch(statements);
+}
+
 async function audit(env, actor, action, target = "", reason = "", details = "") {
   await env.DB.prepare(
     "INSERT INTO audit_logs(actor_id,action,target_id,reason,details) VALUES(?,?,?,?,?)"
