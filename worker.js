@@ -1,3 +1,5 @@
+import { ADMIN_CATEGORIES, ADMIN_COMMANDS, CHAT_ONLY_COMMANDS, WEB_COMMANDS, parseCommand, ensureTelegramCommands, createCommandSystem } from "./commands.js";
+
 /*
  * DAKI Telegram Business + Group Assistant
  * Version: 2.5.10
@@ -72,16 +74,6 @@ Respond directly in natural language. Do not wrap your answer in JSON, XML, or c
 unless the user explicitly requests that format. Set no artificial handoff flags.
 `;
 
-const ADMIN_CATEGORIES = [
-  ["control", "التحكم بالبوت"],
-  ["users", "المستخدمون"],
-  ["moderation", "الحماية والإشراف"],
-  ["ai", "الذكاء الاصطناعي والتعليم"],
-  ["admins", "المالكون والمشرفون"],
-  ["groups", "المجموعات"],
-  ["stats", "الإحصائيات"],
-  ["maintenance", "الصيانة والنسخ الاحتياطي"]
-];
 
 const ADDITIONAL_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS mutes (
@@ -107,65 +99,6 @@ const ADDITIONAL_SCHEMA = [
   )`,
 ];
 
-const ADMIN_COMMANDS = [
-  { name: 'admin', category: 'control', labels: { ar: 'لوحة الإدارة', en: 'Admin panel', de: 'Administrationsbereich', zh: '管理面板' } },
-  { name: 'adminhelp', category: 'control', labels: { ar: 'مساعدة الإدارة', en: 'Admin help', de: 'Admin-Hilfe', zh: '管理帮助' } },
-  { name: 'dakistatus', category: 'control', labels: { ar: 'حالة DAKI', en: 'DAKI status', de: 'DAKI-Status', zh: 'DAKI状态' } },
-  { name: 'dakion', category: 'control', labels: { ar: 'تشغيل الردود', en: 'Enable replies', de: 'Antworten aktivieren', zh: '启用回复' } },
-  { name: 'dakioff', category: 'control', labels: { ar: 'إيقاف الردود', en: 'Disable replies', de: 'Antworten deaktivieren', zh: '停用回复' } },
-  { name: 'restartinfo', category: 'control', labels: { ar: 'معلومات إعادة التشغيل', en: 'Restart information', de: 'Neustartinformationen', zh: '重启信息' } },
-  { name: 'users', category: 'users', labels: { ar: 'المستخدمون', en: 'Users', de: 'Benutzer', zh: '用户' } },
-  { name: 'userinfo', category: 'users', labels: { ar: 'معلومات المستخدم', en: 'User information', de: 'Benutzerinformationen', zh: '用户信息' } },
-  { name: 'userhistory', category: 'users', labels: { ar: 'سجل المحادثة', en: 'Conversation history', de: 'Chatverlauf', zh: '聊天记录' } },
-  { name: 'searchuser', category: 'users', labels: { ar: 'البحث عن مستخدم', en: 'Search user', de: 'Benutzer suchen', zh: '搜索用户' } },
-  { name: 'forgetuser', category: 'users', labels: { ar: 'حذف ذاكرة مستخدم', en: 'Delete user memory', de: 'Benutzerspeicher löschen', zh: '删除用户记忆' } },
-  { name: 'userstats', category: 'users', labels: { ar: 'إحصائيات المستخدم', en: 'User statistics', de: 'Benutzerstatistik', zh: '用户统计' } },
-  { name: 'blocked', category: 'moderation', labels: { ar: 'المحظورون', en: 'Blocked users', de: 'Gesperrte Benutzer', zh: '已屏蔽用户' } },
-  { name: 'ban', category: 'moderation', labels: { ar: 'حظر المستخدم', en: 'Ban user', de: 'Benutzer sperren', zh: '封禁用户' } },
-  { name: 'unban', category: 'moderation', labels: { ar: 'إلغاء الحظر', en: 'Unban user', de: 'Sperre aufheben', zh: '解除封禁' } },
-  { name: 'warn', category: 'moderation', labels: { ar: 'تحذير مستخدم', en: 'Warn user', de: 'Benutzer verwarnen', zh: '警告用户' } },
-  { name: 'warnings', category: 'moderation', labels: { ar: 'سجل التحذيرات', en: 'Warnings', de: 'Verwarnungen', zh: '警告记录' } },
-  { name: 'reason', category: 'moderation', labels: { ar: 'سبب الإجراء', en: 'Action reason', de: 'Aktionsgrund', zh: '操作原因' } },
-  { name: 'mute', category: 'moderation', labels: { ar: 'كتم المستخدم', en: 'Mute user', de: 'Benutzer stummschalten', zh: '禁言用户' } },
-  { name: 'aiinfo', category: 'ai', labels: { ar: 'معلومات الذكاء الاصطناعي', en: 'AI information', de: 'KI-Informationen', zh: 'AI信息' } },
-  { name: 'memory', category: 'ai', labels: { ar: 'الذاكرة', en: 'Memory', de: 'Speicher', zh: '记忆' } },
-  { name: 'clearmemory', category: 'ai', labels: { ar: 'مسح الذاكرة', en: 'Clear memory', de: 'Speicher löschen', zh: '清除记忆' } },
-  { name: 'instructions', category: 'ai', labels: { ar: 'التعليمات', en: 'Instructions', de: 'Anweisungen', zh: '指令' } },
-  { name: 'addinstruction', category: 'ai', labels: { ar: 'إضافة تعليمة', en: 'Add instruction', de: 'Anweisung hinzufügen', zh: '添加指令' } },
-  { name: 'editinstruction', category: 'ai', labels: { ar: 'تعديل تعليمة', en: 'Edit instruction', de: 'Anweisung bearbeiten', zh: '编辑指令' } },
-  { name: 'delinstruction', category: 'ai', labels: { ar: 'حذف تعليمة', en: 'Delete instruction', de: 'Anweisung löschen', zh: '删除指令' } },
-  { name: 'reloadprompt', category: 'ai', labels: { ar: 'إعادة تحميل التعليمات', en: 'Reload instructions', de: 'Anweisungen neu laden', zh: '重新加载指令' } },
-  { name: 'admins', category: 'admins', labels: { ar: 'المشرفون', en: 'Administrators', de: 'Administratoren', zh: '管理员' } },
-  { name: 'addadmin', category: 'admins', labels: { ar: 'إضافة مشرف', en: 'Add administrator', de: 'Administrator hinzufügen', zh: '添加管理员' } },
-  { name: 'removeadmin', category: 'admins', labels: { ar: 'إزالة مشرف', en: 'Remove administrator', de: 'Administrator entfernen', zh: '移除管理员' } },
-  { name: 'addowner', category: 'admins', labels: { ar: 'إضافة مالك', en: 'Add owner', de: 'Eigentümer hinzufügen', zh: '添加所有者' } },
-  { name: 'removeowner', category: 'admins', labels: { ar: 'إزالة مالك', en: 'Remove owner', de: 'Eigentümer entfernen', zh: '移除所有者' } },
-  { name: 'permissions', category: 'admins', labels: { ar: 'الصلاحيات', en: 'Permissions', de: 'Berechtigungen', zh: '权限' } },
-  { name: 'setpermissions', category: 'admins', labels: { ar: 'ضبط الصلاحيات', en: 'Set permissions', de: 'Berechtigungen festlegen', zh: '设置权限' } },
-  { name: 'groups', category: 'groups', labels: { ar: 'المجموعات', en: 'Groups', de: 'Gruppen', zh: '群组' } },
-  { name: 'groupinfo', category: 'groups', labels: { ar: 'معلومات المجموعة', en: 'Group information', de: 'Gruppeninformationen', zh: '群组信息' } },
-  { name: 'groupmode', category: 'groups', labels: { ar: 'نمط المجموعة', en: 'Group mode', de: 'Gruppenmodus', zh: '群组模式' } },
-  { name: 'groupenable', category: 'groups', labels: { ar: 'تفعيل المجموعة', en: 'Enable group', de: 'Gruppe aktivieren', zh: '启用群组' } },
-  { name: 'groupdisable', category: 'groups', labels: { ar: 'تعطيل المجموعة', en: 'Disable group', de: 'Gruppe deaktivieren', zh: '禁用群组' } },
-  { name: 'stats', category: 'stats', labels: { ar: 'الإحصائيات', en: 'Statistics', de: 'Statistiken', zh: '统计' } },
-  { name: 'today', category: 'stats', labels: { ar: 'إحصائيات اليوم', en: 'Today statistics', de: 'Tagesstatistik', zh: '今日统计' } },
-  { name: 'weekly', category: 'stats', labels: { ar: 'إحصائيات أسبوعية', en: 'Weekly statistics', de: 'Wochenstatistik', zh: '每周统计' } },
-  { name: 'monthly', category: 'stats', labels: { ar: 'إحصائيات شهرية', en: 'Monthly statistics', de: 'Monatsstatistik', zh: '每月统计' } },
-  { name: 'topusers', category: 'stats', labels: { ar: 'الأكثر نشاطاً', en: 'Top users', de: 'Aktivste Benutzer', zh: '活跃用户' } },
-  { name: 'aistats', category: 'stats', labels: { ar: 'إحصائيات الذكاء الاصطناعي', en: 'AI statistics', de: 'KI-Statistik', zh: 'AI统计' } },
-  { name: 'errors', category: 'maintenance', labels: { ar: 'الأخطاء', en: 'Errors', de: 'Fehler', zh: '错误' } },
-  { name: 'health', category: 'maintenance', labels: { ar: 'فحص النظام', en: 'System health', de: 'Systemprüfung', zh: '系统检查' } },
-  { name: 'backup', category: 'maintenance', labels: { ar: 'نسخة احتياطية', en: 'Backup', de: 'Sicherung', zh: '备份' } },
-  { name: 'restore', category: 'maintenance', labels: { ar: 'استعادة نسخة', en: 'Restore backup', de: 'Sicherung wiederherstellen', zh: '恢复备份' } },
-  { name: 'maintenance', category: 'maintenance', labels: { ar: 'وضع الصيانة', en: 'Maintenance mode', de: 'Wartungsmodus', zh: '维护模式' } },
-  { name: 'version', category: 'maintenance', labels: { ar: 'الإصدار', en: 'Version', de: 'Version', zh: '版本' } },
-  { name: 'logs', category: 'maintenance', labels: { ar: 'سجل العمليات', en: 'Activity logs', de: 'Aktivitätsprotokoll', zh: '操作日志' } }
-];
-
-const CHAT_ONLY_COMMANDS = new Set(["ban","unban","warn","mute","userinfo","searchuser","userhistory","forgetuser","reason","groupinfo","restore"]);
-const WEB_COMMANDS = new Set(ADMIN_COMMANDS.map(c => c.name).filter(name =>
-  !CHAT_ONLY_COMMANDS.has(name) && !["admin","adminhelp","addinstruction","editinstruction","delinstruction","addadmin","removeadmin","addowner","removeowner","permissions","setpermissions","groupmode","groupenable","groupdisable"].includes(name)
-));
 
 const ADMIN_HTML = `<!doctype html>
 <html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"><meta name="theme-color" content="#0b1020"><title>DAKI Control Center</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -215,7 +148,7 @@ html,body{width:100%;min-width:0;overflow-x:hidden}body{padding-bottom:calc(76px
  function table(headers,rows){return '<div class="tablewrap"><table class="table"><thead><tr>'+headers.map(h=>'<th>'+h+'</th>').join('')+'</tr></thead><tbody>'+ (rows||[]).join('')+'</tbody></table></div>';}
  function noData(){return '<div class="empty">'+t('noData')+'</div>';}
  async function open(section){state.section=section;nav();title();const host=document.getElementById('body');host.innerHTML='<div class="empty">'+t('refresh')+'...</div>';try{if(section==='overview')await overview(host);if(section==='users')await users(host);if(section==='groups')await groups(host);if(section==='admins')await admins(host);if(section==='memory')await memory(host);if(section==='stats')await stats(host);if(section==='backup')backup(host);if(section==='settings')await settings(host);}catch(e){host.innerHTML='<div class="panel error">'+esc(e.message)+'</div>';}}
- async function overview(host){const r=await api('overview');state.commands=r.commands||[];const o=r.overview;host.innerHTML='<div class="hero"><h2>'+t('welcome')+'</h2><p>'+t('welcomeSub')+'</p></div><div class="metrics">'+[['userCount',o.users],['groupCount',o.groups],['adminCount',o.admins],['errorCount',o.errors]].map(x=>'<div class="metric"><span>'+t(x[0])+'</span><strong>'+x[1]+'</strong></div>').join('')+'</div><div class="head"><div><h2>'+t('system')+'</h2></div><button class="btn" id="refresh">'+t('refresh')+'</button></div><div class="grid">'+[['database',o.db],['ai',o.ai],['token',o.token],['botEnabled',o.bot_enabled]].map(x=>'<div class="panel"><span>'+t(x[0])+'</span><div class="status"><i class="dot"></i>'+(x[1]?t('enabled'):t('disabled'))+'</div></div>').join('')+'</div><div class="head"><div><h2>'+t('commands')+'</h2><p>'+t('commandsDesc')+'</p></div></div><div class="commandgrid">'+state.commands.map(c=>'<div class="command"><b>'+esc((c.labels&&c.labels[state.lang])||c.labels.ar)+'</b><code>/'+esc(c.name)+'</code>'+(c.web_enabled?'<button class="btn" data-run-command="'+esc(c.name)+'">تنفيذ</button>':'<small>يتطلب المحادثة</small>')+'</div>').join('')+'</div>';
+ async function overview(host){const r=await api('overview');state.commands=r.commands||[];const o=r.overview;host.innerHTML='<div class="hero"><h2>'+t('welcome')+'</h2><p>'+t('welcomeSub')+'</p></div><div class="metrics">'+[['userCount',o.users],['groupCount',o.groups],['adminCount',o.admins],['errorCount',o.errors]].map(x=>'<div class="metric"><span>'+t(x[0])+'</span><strong>'+x[1]+'</strong></div>').join('')+'</div><div class="head"><div><h2>'+t('system')+'</h2></div><button class="btn" id="refresh">'+t('refresh')+'</button></div><div class="grid">'+[['database',o.db],['ai',o.ai],['token',o.token],['botEnabled',o.bot_enabled]].map(x=>'<div class="panel"><span>'+t(x[0])+'</span><div class="status"><i class="dot"></i>'+(x[1]?t('enabled'):t('disabled'))+'</div></div>').join('')+'</div><div class="head"><div><h2>'+t('commands')+'</h2><p>'+t('commandsDesc')+'</p></div></div><div class="commandgrid">'+state.commands.map(c=>'<div class="command"><b>'+esc((c.labels&&c.labels[state.lang])||c.labels.ar)+'</b><code>/'+esc(c.name)+'</code><small>'+esc(c.description||'')+'</small><small class="muted">الاستخدام: '+esc(c.usage||('/'+c.name))+'</small><div class="tools"><span class="badge">'+esc(c.permission||'admin')+'</span><span class="badge '+(c.risk==='high'?'bad':'good')+'">'+(c.risk==='high'?'حساس':'عادي')+'</span></div>'+(c.web_enabled?'<button class="btn" data-run-command="'+esc(c.name)+'">تنفيذ</button>':'<small>يتطلب المحادثة</small>')+'</div>').join('')+'</div>';
  host.querySelector('#refresh').onclick=()=>open('overview');host.querySelectorAll('[data-run-command]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{const r=await api('runCommand',{name:b.dataset.runCommand});toast(r.message||t('saved'));}catch(e){toast(e.message,true);}finally{b.disabled=false;}});}
  async function users(host){const r=await api('usersList');const rows=r.users||[];host.innerHTML='<div class="head"><div><h2>'+t('users')+'</h2><p>'+rows.length+' / 100</p></div><input class="input" id="uq" placeholder="'+t('search')+'"></div><div id="utable"></div>';const draw=list=>{document.getElementById('utable').innerHTML=list.length?table([t('name'),t('id'),t('language'),t('lastSeen'),t('actions')],list.map(u=>'<tr><td>'+esc(u.first_name||'—')+'<small>'+esc(u.username?'@'+u.username:'')+'</small></td><td class="ltr">'+esc(u.user_id)+'</td><td>'+esc(u.language||'—')+'</td><td>'+esc(u.last_seen||'—')+'</td><td><button class="btn '+(u.is_blocked?'':'danger')+'" data-toggle="'+esc(u.user_id)+'" data-blocked="'+(u.is_blocked?'1':'0')+'">'+t(u.is_blocked?'unblock':'block')+'</button> <button class="btn" data-forget="'+esc(u.user_id)+'">'+t('forget')+'</button></td></tr>')):noData();};draw(rows);host.querySelector('#uq').oninput=e=>{const q=e.target.value.toLowerCase();draw(rows.filter(u=>[u.user_id,u.username,u.first_name].join(' ').toLowerCase().includes(q)));};host.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=async()=>{try{await api(b.dataset.blocked==='1'?'userUnblock':'userBlock',{user_id:b.dataset.toggle});toast(t('saved'));open('users');}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-forget]').forEach(b=>b.onclick=async()=>{if(!confirm(t('confirm')))return;try{await api('userForget',{user_id:b.dataset.forget});toast(t('saved'));open('users');}catch(e){toast(e.message,true);}});}
  async function groups(host){const r=await api('groupsList');const rows=r.groups||[];host.innerHTML='<div class="head"><div><h2>'+t('groups')+'</h2><p>'+rows.length+'</p></div></div>'+ (rows.length?rows.map(g=>'<div class="rowcard"><div class="meta"><strong>'+esc(g.title||g.chat_id)+'</strong><small class="ltr">'+esc(g.chat_id)+'</small><small>'+t('status')+': '+t(g.enabled?'enabled':'disabled')+'</small></div><div class="tools"><select class="select" data-mode="'+esc(g.chat_id)+'"><option value="mention" '+(g.mode==='mention'?'selected':'')+'>'+t('mention')+'</option><option value="all" '+(g.mode==='all'?'selected':'')+'>'+t('all')+'</option></select><button class="btn" data-enable="'+esc(g.chat_id)+'" data-on="'+(g.enabled?'1':'0')+'">'+t(g.enabled?'disabled':'enabled')+'</button></div></div>').join(''):noData());host.querySelectorAll('[data-mode]').forEach(el=>el.onchange=async()=>{try{await api('groupUpdate',{chat_id:el.dataset.mode,mode:el.value});toast(t('saved'));}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-enable]').forEach(b=>b.onclick=async()=>{try{await api('groupUpdate',{chat_id:b.dataset.enable,enabled:b.dataset.on!=='1'});toast(t('saved'));open('groups');}catch(e){toast(e.message,true);}});}
@@ -223,7 +156,7 @@ html,body{width:100%;min-width:0;overflow-x:hidden}body{padding-bottom:calc(76px
  async function memory(host){const r=await api('instructionsList');const rows=r.instructions||[];host.innerHTML='<div class="panel"><div class="field"><label>'+t('newInstruction')+'</label><textarea class="area" id="newInst"></textarea></div><button class="btn primary" id="addInst">'+t('add')+'</button></div><div id="ilist"></div>';document.getElementById('ilist').innerHTML=rows.length?rows.map(x=>'<div class="rowcard"><div class="meta"><strong>#'+x.id+' · '+t(x.active?'enabled':'disabled')+'</strong><small>'+esc(x.instruction)+'</small></div><div class="tools"><button class="btn" data-edit="'+x.id+'">'+t('edit')+'</button><button class="btn danger" data-del="'+x.id+'">'+t('delete')+'</button></div></div>').join(''):noData();document.getElementById('addInst').onclick=async()=>{try{await api('instructionAdd',{instruction:document.getElementById('newInst').value});toast(t('saved'));open('memory');}catch(e){toast(e.message,true);}};host.querySelectorAll('[data-edit]').forEach(b=>b.onclick=async()=>{const old=rows.find(x=>String(x.id)===b.dataset.edit);const value=prompt(t('instruction'),old.instruction);if(value===null)return;try{await api('instructionUpdate',{id:old.id,instruction:value});toast(t('saved'));open('memory');}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{if(!confirm(t('confirm')))return;try{await api('instructionDelete',{id:b.dataset.del});toast(t('saved'));open('memory');}catch(e){toast(e.message,true);}});}
  async function stats(host){const r=await api('statsData'),s=r.stats;host.innerHTML='<div class="metrics">'+[['userCount',s.users],['groupCount',s.groups],['messages',s.messages],['errorCount',s.errors]].map(x=>'<div class="metric"><span>'+t(x[0])+'</span><strong>'+x[1]+'</strong></div>').join('')+'</div><div class="head"><h2>'+t('audit')+'</h2></div>'+((r.audit||[]).length?table(['ID','Action','Actor','Target','Date'],r.audit.map(x=>'<tr><td>'+x.id+'</td><td>'+esc(x.action)+'</td><td>'+esc(x.actor_id)+'</td><td>'+esc(x.target_id||'—')+'</td><td>'+esc(x.created_at)+'</td></tr>')):noData())+'<div class="head"><h2>'+t('errors')+'</h2></div>'+((r.errorRows||[]).length?table(['ID','Type','Message','Date'],r.errorRows.map(x=>'<tr><td>'+x.id+'</td><td>'+esc(x.error_type)+'</td><td>'+esc(x.error_message)+'</td><td>'+esc(x.created_at)+'</td></tr>')):noData());}
  function backup(host){host.innerHTML='<div class="panel"><h2>'+t('export')+'</h2><p class="muted">'+t('restoreNote')+'</p><button class="btn primary" id="export">'+t('export')+'</button></div><div class="panel"><h2>'+t('restore')+'</h2><input class="input" type="file" id="backupFile" accept="application/json,.json"><div class="tools"><button class="btn danger" id="restore">'+t('restore')+'</button></div></div>';document.getElementById('export').onclick=async()=>{try{const r=await api('backupExport');const blob=new Blob([JSON.stringify(r.backup,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='daki-backup-'+new Date().toISOString().slice(0,10)+'.json';a.click();URL.revokeObjectURL(url);toast(t('saved'));}catch(e){toast(e.message,true);}};document.getElementById('restore').onclick=async()=>{const f=document.getElementById('backupFile').files[0];if(!f){toast(t('chooseFile'),true);return;}if(f.size>1500000){toast('ملف النسخة أكبر من الحد المسموح (1.5 MB).',true);return;}if(!confirm(t('confirm')))return;try{const backup=JSON.parse(await f.text());const r=await api('backupRestore',{backup});toast(t('saved')+' '+r.restored); }catch(e){toast(e.message,true);}};}
- async function settings(host){const r=await api('settingsGet'),s=r.settings;const keys=[['bot_enabled','botEnabled'],['maintenance','maintenance'],['alerts_enabled','alerts']];host.innerHTML='<div class="panel">'+keys.map(x=>'<div class="rowcard"><div class="meta"><strong>'+t(x[1])+'</strong><small>'+t('status')+': '+t(s[x[0]]==='1'?'enabled':'disabled')+'</small></div><button class="btn '+(s[x[0]]==='1'?'danger':'primary')+'" data-setting="'+x[0]+'" data-value="'+(s[x[0]]==='1'?'0':'1')+'">'+t(s[x[0]]==='1'?'disabled':'enabled')+'</button></div>').join('')+'</div><div class="head"><div><h2>'+t('commands')+'</h2><p>'+t('commandsDesc')+'</p></div></div><div class="commandgrid">'+state.commands.map(c=>'<div class="command"><b>'+esc((c.labels&&c.labels[state.lang])||c.labels.ar)+'</b><code>/'+esc(c.name)+'</code></div>').join('')+'</div><div class="head"><h2>'+t('custom')+'</h2></div><div class="notice">'+t('draftOnly')+'</div><div class="panel"><div class="tools"><input class="input ltr" id="cname" placeholder="'+t('cmdName')+'"><input class="input" id="cdesc" placeholder="'+t('description')+'"></div><textarea class="area ltr" id="ccode" placeholder="'+t('code')+'"></textarea><button class="btn primary" id="csave">'+t('save')+'</button></div><div id="customList"></div>';host.querySelectorAll('[data-setting]').forEach(b=>b.onclick=async()=>{try{await api('settingsSet',{key:b.dataset.setting,value:b.dataset.value});toast(t('saved'));open('settings');}catch(e){toast(e.message,true);}});document.getElementById('csave').onclick=async()=>{try{await api('saveCommand',{name:document.getElementById('cname').value,description:document.getElementById('cdesc').value,code:document.getElementById('ccode').value});toast(t('saved'));loadCustom();}catch(e){toast(e.message,true);}};loadCustom();}
+ async function settings(host){const r=await api('settingsGet'),s=r.settings;const keys=[['bot_enabled','botEnabled'],['maintenance','maintenance'],['alerts_enabled','alerts']];host.innerHTML='<div class="panel">'+keys.map(x=>'<div class="rowcard"><div class="meta"><strong>'+t(x[1])+'</strong><small>'+t('status')+': '+t(s[x[0]]==='1'?'enabled':'disabled')+'</small></div><button class="btn '+(s[x[0]]==='1'?'danger':'primary')+'" data-setting="'+x[0]+'" data-value="'+(s[x[0]]==='1'?'0':'1')+'">'+t(s[x[0]]==='1'?'disabled':'enabled')+'</button></div>').join('')+'</div><div class="head"><div><h2>'+t('commands')+'</h2><p>'+t('commandsDesc')+'</p></div></div><div class="commandgrid">'+state.commands.map(c=>'<div class="command"><b>'+esc((c.labels&&c.labels[state.lang])||c.labels.ar)+'</b><code>/'+esc(c.name)+'</code><small>'+esc(c.description||'')+'</small><small class="muted">'+esc(c.usage||('/'+c.name))+'</small><div class="tools"><span class="badge">'+esc(c.permission||'admin')+'</span><span class="badge '+(c.risk==='high'?'bad':'good')+'">'+(c.risk==='high'?'حساس':'عادي')+'</span></div></div>').join('')+'</div><div class="head"><h2>'+t('custom')+'</h2></div><div class="notice">'+t('draftOnly')+'</div><div class="panel"><div class="tools"><input class="input ltr" id="cname" placeholder="'+t('cmdName')+'"><input class="input" id="cdesc" placeholder="'+t('description')+'"></div><textarea class="area ltr" id="ccode" placeholder="'+t('code')+'"></textarea><button class="btn primary" id="csave">'+t('save')+'</button></div><div id="customList"></div>';host.querySelectorAll('[data-setting]').forEach(b=>b.onclick=async()=>{try{await api('settingsSet',{key:b.dataset.setting,value:b.dataset.value});toast(t('saved'));open('settings');}catch(e){toast(e.message,true);}});document.getElementById('csave').onclick=async()=>{try{await api('saveCommand',{name:document.getElementById('cname').value,description:document.getElementById('cdesc').value,code:document.getElementById('ccode').value});toast(t('saved'));loadCustom();}catch(e){toast(e.message,true);}};loadCustom();}
  async function loadCustom(){try{const r=await api('customList');const host=document.getElementById('customList');if(!host)return;host.innerHTML=(r.commands||[]).length?r.commands.map(c=>'<div class="rowcard"><div class="meta"><strong>/'+esc(c.name)+'</strong><small>'+esc(c.description)+' · '+esc(c.status)+'</small></div><button class="btn danger" data-cdel="'+esc(c.name)+'">'+t('remove')+'</button></div>').join(''):noData();host.querySelectorAll('[data-cdel]').forEach(b=>b.onclick=async()=>{try{await api('deleteCommand',{name:b.dataset.cdel});toast(t('saved'));loadCustom();}catch(e){toast(e.message,true);}});}catch(e){toast(e.message,true);}}
  document.getElementById('language').onchange=e=>{state.lang=e.target.value;try{localStorage.setItem('daki-admin-language',state.lang);}catch(x){}setLang();open(state.section);};
  setLang();open('overview');
@@ -245,13 +178,7 @@ function safeString(value, max = 4000) {
   return String(value ?? "").slice(0, max);
 }
 function nowTs() { return Math.floor(Date.now() / 1000); }
-function parseCommand(input) {
-  const s = String(input || "").trim();
-  const m = s.match(/^\/([a-zA-Z0-9_]+)(?:@([a-zA-Z0-9_]+))?(?:\s+([\s\S]*))?$/);
-  if (!m) return null;
-  if (m[2] && m[2].toLowerCase() !== BOT_USERNAME.toLowerCase()) return null;
-  return { name: m[1].toLowerCase(), args: (m[3] || "").trim() };
-}
+
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"]/g, c => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"
@@ -525,50 +452,7 @@ async function ensureSchema(env) {
   if (!env.DB) throw new Error("D1 binding DB is missing");
   for (const sql of ADDITIONAL_SCHEMA) await env.DB.prepare(sql).run();
 }
-async function ensureTelegramCommands(env) {
-  // Install localized command descriptions for the bot's default, private and group menus.
-  // Telegram command tokens themselves must remain lowercase Latin names; only descriptions localize.
-  const stateKey = `telegram_commands_${VERSION}_scopes_v3`;
-  const existing = await env.DB.prepare(
-    "SELECT state_value FROM daki_state WHERE state_key=?"
-  ).bind(stateKey).first();
-  if (existing?.state_value === "1") return;
 
-  const languages = ["ar", "en", "de", "zh"];
-  const scopes = [
-    { type: "default" },
-    { type: "all_private_chats" },
-    { type: "all_group_chats" }
-  ];
-  const buildCommands = language => [
-    { command: "start", description: language === "ar" ? "بدء المحادثة" : language === "de" ? "Gespräch starten" : language === "zh" ? "开始对话" : "Start the conversation" },
-    { command: "bot", description: language === "ar" ? "استئناف المساعد" : language === "de" ? "Assistent fortsetzen" : language === "zh" ? "恢复助手" : "Resume the assistant" },
-    ...ADMIN_COMMANDS.map(command => ({
-      command: command.name,
-      description: safeString(command.labels[language] || command.labels.ar, 240)
-    }))
-  ];
-
-  for (const scope of scopes) {
-    for (const language of languages) {
-      const commands = buildCommands(language);
-      if (commands.length > 100) throw new Error("Telegram command limit exceeded");
-      for (const item of commands) {
-        if (!/^[a-z0-9_]{1,32}$/.test(item.command) || !item.description || item.description.length > 256) {
-          throw new Error(`Invalid Telegram command definition: ${item.command}`);
-        }
-      }
-      const payload = { commands, scope };
-      if (language !== "ar") payload.language_code = language;
-      await tg(env, "setMyCommands", payload);
-    }
-  }
-
-  await env.DB.prepare(`INSERT INTO daki_state(state_key,state_value,updated_at)
-    VALUES(?, '1',CURRENT_TIMESTAMP)
-    ON CONFLICT(state_key) DO UPDATE SET state_value='1',updated_at=CURRENT_TIMESTAMP`)
-    .bind(stateKey).run();
-}
 function bytesToHex(buffer) {
   return Array.from(new Uint8Array(buffer), byte => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -607,6 +491,12 @@ async function validateWebAppInitData(initData, botToken) {
   if (!user?.id) return null;
   return { user, authDate };
 }
+const COMMAND_SYSTEM = createCommandSystem({
+  VERSION, OWNER_ID, ADMIN_URL, replyOptions, isOwner, hasPermission, sendMessage, isPrivate,
+  getSetting, setSetting, audit, tg, sendBackup, logError
+});
+const commandReply = COMMAND_SYSTEM.execute;
+
 async function handleAdminApi(request, env) {
   let body;
   try { body = await request.json(); } catch (_) { return json({ ok: false, error: "Invalid JSON" }, 400); }
@@ -1124,349 +1014,6 @@ async function restoreBackup(env, message, actorId) {
   return count;
 }
 
-async function commandReply(env, msg, business, actorId, command) {
-  const chatId = msg.chat.id;
-  const opts = replyOptions(msg, business);
-  const args = command.args;
-  const name = command.name;
-  const owner = await isOwner(env, actorId);
-  const adminCommands = new Set([
-    "admin","adminhelp","dakistatus","dakion","dakioff","restartinfo","users","userinfo","userhistory",
-    "searchuser","forgetuser","blocked","ban","unban","warn","warnings","reason","mute","aiinfo","memory",
-    "clearmemory","instructions","addinstruction","editinstruction","delinstruction","reloadprompt",
-    "admins","addadmin","removeadmin","addowner","removeowner","permissions","setpermissions",
-    "groups","groupinfo","groupmode","groupenable","groupdisable","stats","today","weekly","monthly",
-    "topusers","userstats","errors","aistats","health","backup","restore","maintenance","version","logs"
-  ]);
-  if (!adminCommands.has(name)) return false;
-  if (!(await hasPermission(env, actorId, "admin"))) {
-    await sendMessage(env, chatId, "هذا الأمر مخصص لإدارة DAKI.", opts);
-    return true;
-  }
-  const requirePerm = async (perm) => hasPermission(env, actorId, perm);
-  const denied = async () => sendMessage(env, chatId, "ليست لديك صلاحية تنفيذ هذا الإجراء.", opts);
-  const commandPermissions = {
-    dakistatus: "control", dakion: "control", dakioff: "control", restartinfo: "control",
-    users: "users", userinfo: "users", userhistory: "users", searchuser: "users",
-    forgetuser: "users", userstats: "users",
-    blocked: "moderation", ban: "moderation", unban: "moderation", warn: "moderation",
-    warnings: "moderation", reason: "moderation", mute: "moderation",
-    aiinfo: "ai", memory: "ai", clearmemory: "ai", instructions: "ai",
-    addinstruction: "ai", editinstruction: "ai", delinstruction: "ai", reloadprompt: "ai",
-    admins: "admins", addadmin: "admins", removeadmin: "admins", addowner: "admins",
-    removeowner: "admins", permissions: "admins", setpermissions: "admins",
-    groups: "groups", groupinfo: "groups", groupmode: "groups",
-    groupenable: "groups", groupdisable: "groups",
-    stats: "stats", today: "stats", weekly: "stats", monthly: "stats",
-    topusers: "stats", aistats: "stats",
-    errors: "maintenance", health: "maintenance", backup: "maintenance",
-    restore: "maintenance", maintenance: "maintenance", logs: "maintenance"
-  };
-  const requiredPermission = commandPermissions[name];
-  if (requiredPermission && !(await requirePerm(requiredPermission))) {
-    await denied();
-    return true;
-  }
-  const replyTarget = msg.reply_to_message?.from;
-  // A reply always identifies the target; arguments then become the reason.
-  // Without a reply, the first argument is the numeric Telegram ID.
-  const argParts = args.split(/\s+/).filter(Boolean);
-  const targetId = replyTarget?.id ? String(replyTarget.id) : (argParts[0] || "");
-  const reason = replyTarget ? args : argParts.slice(1).join(" ");
-  let out = "";
-  try {
-    switch (name) {
-      case "admin":
-        if (!owner) return denied(), true;
-        if (business || !isPrivate(msg.chat)) {
-          await sendMessage(env, chatId,
-            "لفتح لوحة الإدارة بأمان، افتح المحادثة الخاصة مع @DakiSchuleBot ثم أرسل /admin.\nلا تفتح رابط اللوحة في متصفح خارجي لأن Telegram لن يرسل بيانات التحقق اللازمة.", opts);
-          return true;
-        }
-        await sendMessage(env, chatId, "مركز تحكم DAKI\nاضغط الزر أدناه لفتح لوحة الإدارة داخل Telegram:", {
-          ...opts,
-          reply_markup: { inline_keyboard: [[{ text: "فتح لوحة الإدارة", web_app: { url: ADMIN_URL } }]] }
-        });
-        return true;
-      case "adminhelp":
-        out = "أوامر الإدارة الأساسية:\n/admin لوحة الأزرار\n/dakistatus الحالة\n/dakion تشغيل\n/dakioff إيقاف\n/users المستخدمون\n/ban أو /unban بالرد على رسالة المستخدم\n/warn بالرد على المستخدم\n/stats الإحصائيات\n/backup نسخة احتياطية\n/health فحص النظام\n\nبعض الأوامر تتطلب صلاحية المالك الرئيسي.";
-        break;
-      case "dakistatus":
-        out = `DAKI ${VERSION}\nالحالة: ${await getSetting(env,"bot_enabled","1")==="1" ? "يعمل" : "متوقف"}\nقاعدة البيانات: متصلة\nالمالك الرئيسي: ${OWNER_ID}`;
-        break;
-      case "dakion":
-      case "dakioff":
-        if (!(await requirePerm("control"))) return denied(), true;
-        await setSetting(env, "bot_enabled", name === "dakion" ? "1" : "0", actorId);
-        await audit(env, actorId, name, "", "", "bot_enabled changed");
-        out = name === "dakion" ? "تم تشغيل ردود DAKI." : "تم إيقاف ردود DAKI مؤقتاً.";
-        break;
-      case "restartinfo":
-        out = `إصدار DAKI: ${VERSION}\nCloudflare Worker يعيد التشغيل تلقائياً عند نشر إصدار جديد.`;
-        break;
-      case "users": {
-        const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM users").first();
-        out = `عدد المستخدمين المسجلين: ${row?.n ?? 0}`; break;
-      }
-      case "userinfo":
-      case "searchuser": {
-        if (!(await requirePerm("users"))) return denied(), true;
-        if (!targetId) { out = "استخدم الأمر بالرد على المستخدم أو اكتب رقمه بعد الأمر."; break; }
-        const u = await env.DB.prepare("SELECT * FROM users WHERE user_id=?").bind(targetId).first();
-        out = u ? `المستخدم: ${u.first_name || "—"}\nID: ${u.user_id}\nUsername: @${u.username || "—"}\nاللغة: ${u.language || "—"}\nآخر نشاط: ${u.last_seen}` : "لم أعثر على هذا المستخدم.";
-        break;
-      }
-      case "userhistory": {
-        if (!(await requirePerm("users"))) return denied(), true;
-        if (!targetId) { out = "رد على رسالة المستخدم بالأمر /userhistory."; break; }
-        const c = await env.DB.prepare("SELECT id FROM conversations WHERE user_id=? ORDER BY updated_at DESC LIMIT 1").bind(targetId).first();
-        if (!c) { out = "لا يوجد سجل محادثة."; break; }
-        const rows = await env.DB.prepare("SELECT sender,message_text,created_at FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 10").bind(c.id).all();
-        out = (rows.results || []).reverse().map(r => `${r.sender === "assistant" ? "DAKI" : "المستخدم"}: ${r.message_text}`).join("\n\n") || "السجل فارغ.";
-        break;
-      }
-      case "forgetuser":
-      case "clearmemory": {
-        const id = name === "clearmemory" ? actorId : targetId;
-        if (!id) { out = "رد على رسالة المستخدم بالأمر /forgetuser."; break; }
-        if (id !== actorId && !owner && !(await requirePerm("users"))) return denied(), true;
-        const convs = await env.DB.prepare("SELECT id FROM conversations WHERE user_id=?").bind(id).all();
-        for (const c of convs.results || []) {
-          await env.DB.prepare("DELETE FROM messages WHERE conversation_id=?").bind(c.id).run();
-        }
-        await env.DB.prepare("DELETE FROM conversations WHERE user_id=?").bind(id).run();
-        await env.DB.prepare("DELETE FROM learning_profiles WHERE user_id=?").bind(id).run();
-        await audit(env, actorId, "forget_user", id);
-        out = "تم حذف سجل المحادثات وملف التعلم لهذا المستخدم من D1.";
-        break;
-      }
-      case "blocked": {
-        if (!(await requirePerm("moderation"))) return denied(), true;
-        const rows = await env.DB.prepare("SELECT user_id,reason FROM blocked_users ORDER BY created_at DESC LIMIT 30").all();
-        out = (rows.results || []).map(r => `${r.user_id}${r.reason ? " — " + r.reason : ""}`).join("\n") || "لا يوجد مستخدمون محظورون.";
-        break;
-      }
-      case "ban":
-      case "unban":
-      case "warn":
-      case "mute": {
-        if (!(await requirePerm("moderation"))) return denied(), true;
-        if (!targetId) { out = "رد على رسالة الشخص بالأمر، أو اكتب ID بعد الأمر."; break; }
-        if (targetId === OWNER_ID) { out = "لا يمكن حظر أو تعديل صلاحيات المالك الرئيسي."; break; }
-        if (name === "warn") {
-          await env.DB.prepare("INSERT INTO warnings(user_id,reason,issued_by) VALUES(?,?,?)").bind(targetId, reason || "بدون سبب", actorId).run();
-          await audit(env, actorId, "warn", targetId, reason);
-          out = `تم تسجيل تحذير للمستخدم ${targetId}.`;
-        } else if (name === "mute") {
-          const until = nowTs() + 3600;
-          await env.DB.prepare(`INSERT INTO mutes(user_id,chat_id,until_ts,reason,muted_by) VALUES(?,?,?,?,?)
-            ON CONFLICT(user_id,chat_id) DO UPDATE SET until_ts=excluded.until_ts,reason=excluded.reason,muted_by=excluded.muted_by`)
-            .bind(targetId, String(chatId), until, reason || "ساعة واحدة", actorId).run();
-          if (!business && msg.chat.type !== "private") {
-            try { await tg(env, "restrictChatMember", { chat_id: chatId, user_id: Number(targetId), permissions: { can_send_messages: false }, until_date: until }); }
-            catch (e) { out = `تم حفظ الكتم محلياً، لكن Telegram رفض تقييد العضو: ${e.message}`; break; }
-          }
-          await audit(env, actorId, "mute", targetId, reason);
-          out = `تم كتم المستخدم ${targetId} لمدة ساعة في هذه المحادثة.`;
-        } else if (name === "ban") {
-          await env.DB.prepare("INSERT OR REPLACE INTO blocked_users(user_id,reason,blocked_by) VALUES(?,?,?)").bind(targetId, reason || "بدون سبب", actorId).run();
-          await env.DB.prepare("UPDATE users SET is_blocked=1 WHERE user_id=?").bind(targetId).run();
-          if (!business && msg.chat.type !== "private") {
-            try { await tg(env, "banChatMember", { chat_id: chatId, user_id: Number(targetId) }); }
-            catch (e) { out = `حُظر من DAKI، لكن Telegram لم يسمح بحظره في المجموعة: ${e.message}`; }
-          }
-          await audit(env, actorId, "ban", targetId, reason);
-          if (!out) out = business ? `تم حظر المستخدم من DAKI فقط. لا يمكن لهذا الأمر حظره من حسابك الشخصي في Telegram.` : `تم حظر المستخدم من DAKI.`;
-        } else {
-          await env.DB.prepare("DELETE FROM blocked_users WHERE user_id=?").bind(targetId).run();
-          await env.DB.prepare("UPDATE users SET is_blocked=0 WHERE user_id=?").bind(targetId).run();
-          if (!business && msg.chat.type !== "private") {
-            try { await tg(env, "unbanChatMember", { chat_id: chatId, user_id: Number(targetId), only_if_banned: true }); } catch (_) {}
-          }
-          await audit(env, actorId, "unban", targetId, reason);
-          out = `تم رفع حظر DAKI عن المستخدم ${targetId}.`;
-        }
-        break;
-      }
-      case "warnings": {
-        if (!(await requirePerm("moderation"))) return denied(), true;
-        const id = targetId || actorId;
-        const rows = await env.DB.prepare("SELECT reason,issued_by,created_at FROM warnings WHERE user_id=? ORDER BY id DESC LIMIT 10").bind(id).all();
-        out = (rows.results || []).map(r => `${r.created_at}: ${r.reason} (بواسطة ${r.issued_by})`).join("\n") || "لا توجد تحذيرات.";
-        break;
-      }
-      case "reason": out = "اكتب السبب بعد الأمر، مثال: /ban مخالفة القواعد، ثم أعد الأمر بالرد على رسالة الشخص."; break;
-      case "aiinfo":
-        out = `DAKI مساعد عام ومتخصص في تعليم الألمانية A1–C2.\nالنموذج: ${MODEL}\nالذاكرة: آخر ${HISTORY_LIMIT} رسالة لكل محادثة محفوظة في D1.`; break;
-      case "memory":
-        out = `تُحفظ آخر ${HISTORY_LIMIT} رسالة لكل محادثة في D1، مع فصل محادثات Telegram Business عن المجموعات والمستخدمين.`; break;
-      case "instructions": {
-        const rows = await env.DB.prepare("SELECT id,instruction FROM instructions WHERE active=1 ORDER BY id DESC LIMIT 15").all();
-        out = (rows.results || []).map(r => `${r.id}. ${r.instruction}`).join("\n") || "لا توجد تعليمات إضافية."; break;
-      }
-      case "addinstruction": {
-        if (!(await requirePerm("ai"))) return denied(), true;
-        if (!args) { out = "استخدم: /addinstruction ثم نص التعليمة."; break; }
-        const r = await env.DB.prepare("INSERT INTO instructions(instruction,created_by) VALUES(?,?)").bind(args, actorId).run();
-        await audit(env, actorId, "add_instruction", r.meta?.last_row_id || "", "", args);
-        out = "تمت إضافة التعليمة. ستُستخدم في طلبات الذكاء الاصطناعي القادمة."; break;
-      }
-      case "editinstruction":
-      case "delinstruction": {
-        if (!(await requirePerm("ai"))) return denied(), true;
-        const [id, ...rest] = args.split(/\s+/);
-        if (!/^\d+$/.test(id || "")) { out = `استخدم: /${name} رقم_التعليمة${name === "editinstruction" ? " النص الجديد" : ""}`; break; }
-        if (name === "delinstruction") await env.DB.prepare("UPDATE instructions SET active=0 WHERE id=?").bind(id).run();
-        else await env.DB.prepare("UPDATE instructions SET instruction=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(rest.join(" "), id).run();
-        await audit(env, actorId, name, id);
-        out = "تم تنفيذ العملية."; break;
-      }
-      case "reloadprompt": out = "التعليمات تُقرأ من D1 عند كل طلب جديد؛ لا تحتاج إلى إعادة تشغيل."; break;
-      case "admins": {
-        if (!(await requirePerm("admins")) && !owner) return denied(), true;
-        const rows = await env.DB.prepare("SELECT user_id,role FROM admins ORDER BY created_at").all();
-        out = (rows.results || []).map(r => `${r.user_id} — ${r.role}`).join("\n") || "لا يوجد مشرفون."; break;
-      }
-      case "addadmin":
-      case "addowner": {
-        if (!owner) return denied(), true;
-        if (!targetId || !/^\d+$/.test(targetId)) { out = `استخدم /${name} Telegram_ID`; break; }
-        const role = name === "addowner" ? "owner" : "admin";
-        const perms = role === "owner" ? '{"all":true}' : '{"admin":true,"users":true,"moderation":true}';
-        await env.DB.prepare("INSERT OR REPLACE INTO admins(user_id,role,permissions_json,added_by) VALUES(?,?,?,?)")
-          .bind(targetId, role, perms, actorId).run();
-        await audit(env, actorId, name, targetId);
-        out = `تمت إضافة ${targetId} بدور ${role}.`; break;
-      }
-      case "removeadmin":
-      case "removeowner": {
-        if (!owner) return denied(), true;
-        if (!targetId) { out = `استخدم /${name} Telegram_ID`; break; }
-        if (targetId === OWNER_ID) { out = "المالك الرئيسي محمي ولا يمكن حذفه."; break; }
-        await env.DB.prepare("DELETE FROM admins WHERE user_id=?").bind(targetId).run();
-        await audit(env, actorId, name, targetId);
-        out = `تمت إزالة صلاحيات ${targetId}.`; break;
-      }
-      case "permissions": {
-        if (!owner && !(await requirePerm("admins"))) return denied(), true;
-        const id = targetId || actorId;
-        const a = await getAdmin(env, id);
-        out = a ? `صلاحيات ${id}\nالدور: ${a.role}\nJSON: ${a.permissions_json}` : "هذا المستخدم ليس مشرفاً.";
-        break;
-      }
-      case "setpermissions": {
-        if (!owner) return denied(), true;
-        const parts = args.split(/\s+/).filter(Boolean);
-        const id = parts.shift();
-        const allowed = new Set(["admin","control","users","moderation","ai","groups","stats","maintenance"]);
-        if (!id || !/^\d+$/.test(id) || id === OWNER_ID || !parts.length || parts.some(p => !allowed.has(p))) {
-          out = "استخدم: /setpermissions Telegram_ID admin users moderation ai groups stats maintenance control";
-          break;
-        }
-        const perms = Object.fromEntries(parts.map(p => [p, true]));
-        await env.DB.prepare("UPDATE admins SET permissions_json=? WHERE user_id=?")
-          .bind(JSON.stringify(perms), id).run();
-        await audit(env, actorId, "set_permissions", id, "", JSON.stringify(perms));
-        out = `تم تحديث صلاحيات ${id}: ${parts.join(", ")}`;
-        break;
-      }
-      case "groups": {
-        if (!(await requirePerm("groups"))) return denied(), true;
-        const rows = await env.DB.prepare("SELECT chat_id,title,enabled,mode FROM groups ORDER BY title LIMIT 30").all();
-        out = (rows.results || []).map(r => `${r.title || r.chat_id} (${r.chat_id}) — ${r.enabled ? "مفعلة" : "معطلة"} — ${r.mode}`).join("\n") || "لم تُسجل مجموعات بعد."; break;
-      }
-      case "groupinfo":
-      case "groupmode":
-      case "groupenable":
-      case "groupdisable": {
-        if (!(await requirePerm("groups"))) return denied(), true;
-        const gid = args.split(/\s+/)[0] || (msg.chat.type !== "private" ? String(chatId) : "");
-        if (!gid) { out = "استخدم الأمر داخل المجموعة أو اكتب chat_id."; break; }
-        if (name === "groupenable") await env.DB.prepare("UPDATE groups SET enabled=1 WHERE chat_id=?").bind(gid).run();
-        else if (name === "groupdisable") await env.DB.prepare("UPDATE groups SET enabled=0 WHERE chat_id=?").bind(gid).run();
-        else if (name === "groupmode") {
-          const mode = args.split(/\s+/)[1];
-          if (!["mention","all"].includes(mode)) { out = "استخدم /groupmode chat_id mention أو all"; break; }
-          await env.DB.prepare("UPDATE groups SET mode=? WHERE chat_id=?").bind(mode, gid).run();
-        }
-        const g = await env.DB.prepare("SELECT * FROM groups WHERE chat_id=?").bind(gid).first();
-        out = g ? `المجموعة: ${g.title}\nالحالة: ${g.enabled ? "مفعلة" : "معطلة"}\nالنمط: ${g.mode}` : "المجموعة غير مسجلة بعد."; break;
-      }
-      case "stats":
-      case "today":
-      case "weekly":
-      case "monthly":
-      case "topusers": {
-        if (name === "topusers") {
-          const rows = await env.DB.prepare("SELECT user_id,SUM(quantity) n FROM usage_stats GROUP BY user_id ORDER BY n DESC LIMIT 10").all();
-          out = (rows.results || []).map((r,i) => `${i+1}. ${r.user_id}: ${r.n}`).join("\n") || "لا توجد بيانات.";
-        } else {
-          const interval = name === "weekly" ? "-7 days" : name === "monthly" ? "-30 days" : "0 days";
-          const row = await env.DB.prepare(`SELECT COUNT(*) messages,COUNT(DISTINCT user_id) users FROM usage_stats WHERE event_date >= date('now',?)`).bind(interval).first();
-          const total = await env.DB.prepare("SELECT COUNT(*) n FROM users").first();
-          out = `إحصائيات ${name}:\nالرسائل المسجلة: ${row?.messages || 0}\nالمستخدمون النشطون: ${row?.users || 0}\nإجمالي المستخدمين: ${total?.n || 0}`;
-        }
-        break;
-      }
-      case "userstats": {
-        if (!(await requirePerm("users"))) return denied(), true;
-        const id = targetId || actorId;
-        const user = await env.DB.prepare("SELECT user_id,username,first_name,last_seen FROM users WHERE user_id=?").bind(id).first();
-        const count = await env.DB.prepare("SELECT COALESCE(SUM(quantity),0) n FROM usage_stats WHERE user_id=?").bind(id).first();
-        const profile = await env.DB.prepare("SELECT total_exercises,progress_notes,updated_at FROM learning_profiles WHERE user_id=?").bind(id).first();
-        out = user ? `إحصائيات المستخدم ${id}
-الاسم: ${user.first_name || "—"}
-Username: ${user.username ? "@"+user.username : "—"}
-آخر نشاط: ${user.last_seen || "—"}
-عدد الأنشطة: ${count?.n || 0}
-تمارين مسجلة: ${profile?.total_exercises || 0}
-ملاحظات التعلم: ${profile?.progress_notes || "—"}` : "المستخدم غير مسجل.";
-        break;
-      }
-      case "aistats": {
-        const row = await env.DB.prepare("SELECT COUNT(*) n FROM usage_stats WHERE event_type='message'").first();
-        out = `طلبات المحادثة المسجلة: ${row?.n || 0}`; break;
-      }
-      case "errors": {
-        const rows = await env.DB.prepare("SELECT error_type,error_message,created_at FROM error_logs ORDER BY id DESC LIMIT 10").all();
-        out = (rows.results || []).map(r => `${r.created_at} ${r.error_type}: ${r.error_message}`).join("\n") || "لا توجد أخطاء مسجلة."; break;
-      }
-      case "health":
-        await env.DB.prepare("SELECT 1 AS ok").first();
-        out = `فحص DAKI:\nD1: متصل\nAI binding: ${env.AI?.run ? "موجود" : "غير موجود"}\nTelegram token: ${env.TELEGRAM_BOT_TOKEN ? "موجود" : "غير موجود"}\nالإصدار: ${VERSION}\nهذا فحص إعدادات، وليس اختباراً كاملاً لاستدعاء النموذج.`; break;
-      case "backup":
-        if (!owner) return denied(), true;
-        await sendBackup(env, chatId);
-        await audit(env, actorId, "backup_export");
-        return true;
-      case "restore":
-        if (!owner) return denied(), true;
-        out = "للاستعادة: أرسل ملف JSON الاحتياطي إلى البوت مع كتابة /restore في تعليق الملف. الاستعادة دمجية ولا تحذف السجلات الحالية، ولا تستعيد صلاحيات المشرفين.";
-        break;
-      case "maintenance": {
-        if (!(await requirePerm("maintenance"))) return denied(), true;
-        const mode = args.toLowerCase();
-        if (mode === "on" || mode === "تشغيل") await setSetting(env, "maintenance", "1", actorId);
-        else if (mode === "off" || mode === "إيقاف") await setSetting(env, "maintenance", "0", actorId);
-        const active = await getSetting(env, "maintenance", "0") === "1";
-        await audit(env, actorId, "maintenance", "", "", active ? "on" : "off");
-        out = `وضع الصيانة: ${active ? "مفعل" : "غير مفعل"}.\nللتغيير: /maintenance on أو /maintenance off`;
-        break;
-      }
-      case "version": out = `DAKI ${VERSION}`; break;
-      case "logs": {
-        const rows = await env.DB.prepare("SELECT action,actor_id,target_id,created_at FROM audit_logs ORDER BY id DESC LIMIT 10").all();
-        out = (rows.results || []).map(r => `${r.created_at}: ${r.action} by ${r.actor_id} -> ${r.target_id || "-"}`).join("\n") || "لا توجد سجلات."; break;
-      }
-      default: return false;
-    }
-  } catch (e) {
-    await logError(env, "ADMIN_COMMAND", e, `command=${name}, actor=${actorId}`);
-    out = `تعذر تنفيذ الأمر: ${e.message}`;
-  }
-  await sendMessage(env, chatId, out || "تم.", opts);
-  return true;
-}
 
 async function handleCallback(env, query) {
   const actorId = getUserId(query?.from);
@@ -1581,7 +1128,7 @@ async function handleCallback(env, query) {
         text: "/" + commandName,
         business_connection_id: businessConnectionId || undefined
       };
-      const parsed = parseCommand(fakeMsg.text);
+      const parsed = parseCommand(fakeMsg.text, BOT_USERNAME);
       if (!parsed) throw new Error("تعذر قراءة الأمر المرتبط بهذا الزر.");
       const handled = await commandReply(env, fakeMsg, !!businessConnectionId, actorId, parsed);
       if (!handled) throw new Error(`لا يوجد معالج للأمر /${commandName}.`);
@@ -1633,7 +1180,7 @@ async function handleMessage(env, msg, business) {
   await upsertUser(env, msg.from);
   if (isGroup) await upsertGroup(env, msg.chat);
 
-  const command = parseCommand(messageText);
+  const command = parseCommand(messageText, BOT_USERNAME);
   const stateKey = handoffStateKey(msg, actorId, business);
   if (command?.name === "bot") {
     await env.DB.prepare("DELETE FROM daki_state WHERE state_key=? OR state_key=?")
@@ -1809,7 +1356,7 @@ export default {
 
     try {
       await ensureSchema(env);
-      try { await ensureTelegramCommands(env); }
+      try { await ensureTelegramCommands(env, { VERSION, tg, safeString }); }
       catch (commandSetupError) { await logError(env, "TELEGRAM_COMMAND_SETUP", commandSetupError); }
       if (update.callback_query) {
         await handleCallback(env, update.callback_query);
