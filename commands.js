@@ -562,4 +562,54 @@ for (const command of ADMIN_COMMANDS) {
   command.risk = ["forgetuser","ban","unban","mute","clearmemory","addadmin","removeadmin","addowner","removeowner","setpermissions","backup","restore","maintenance","dakioff"].includes(command.name) ? "high" : "normal";
 }
 export const COMMAND_PERMISSIONS = Object.freeze(Object.fromEntries(ADMIN_COMMANDS.map(c => [c.name, c.permission])));
-export const COMMAND_VERSION = "2.5.10";
+export const COMMAND_VERSION = "2.5.11-rbac1";
+
+// DAKI RBAC v1 — stable permission IDs; UI labels are localized separately.
+export const RBAC_ROLES = Object.freeze({
+  owner: { label: { ar: "مالك مفوّض", en: "Delegated owner", de: "Beauftragter Eigentümer", fr: "Propriétaire délégué" }, permissions: ["dashboard.access", "dashboard.overview", "users.read", "users.moderate", "users.erase", "groups.read", "groups.manage", "ai.read", "ai.manage", "stats.read", "logs.read", "backup.create", "backup.restore", "admins.read", "admins.manage", "roles.manage", "translations.manage", "security.manage"] },
+  super_admin: { label: { ar: "مشرف عام", en: "Super admin", de: "Superadministrator", fr: "Super administrateur" }, permissions: ["dashboard.access", "dashboard.overview", "users.read", "users.moderate", "groups.read", "groups.manage", "ai.read", "ai.manage", "stats.read", "logs.read"] },
+  admin: { label: { ar: "مشرف", en: "Administrator", de: "Administrator", fr: "Administrateur" }, permissions: ["dashboard.access", "dashboard.overview", "users.read", "users.moderate", "groups.read", "ai.read", "stats.read"] },
+  moderator: { label: { ar: "مشرف مجموعات", en: "Moderator", de: "Moderator", fr: "Modérateur" }, permissions: ["dashboard.access", "dashboard.overview", "groups.read", "groups.moderate"] },
+  support: { label: { ar: "الدعم الفني", en: "Support", de: "Support", fr: "Assistance" }, permissions: ["dashboard.access", "dashboard.overview", "users.read"] },
+  translator: { label: { ar: "مترجم", en: "Translator", de: "Übersetzer", fr: "Traducteur" }, permissions: ["dashboard.access", "dashboard.overview", "translations.manage"] },
+  member: { label: { ar: "عضو", en: "Member", de: "Mitglied", fr: "Membre" }, permissions: [] },
+  restricted: { label: { ar: "مقيّد", en: "Restricted", de: "Eingeschränkt", fr: "Restreint" }, permissions: [] }
+});
+export const RBAC_PERMISSION_LABELS = Object.freeze({
+  "dashboard.access": { ar: "دخول لوحة التحكم", en: "Dashboard access", de: "Dashboard-Zugriff", fr: "Accès au tableau de bord" },
+  "dashboard.overview": { ar: "عرض النظرة العامة", en: "View overview", de: "Übersicht anzeigen", fr: "Voir l’aperçu" },
+  "users.read": { ar: "عرض المستخدمين", en: "View users", de: "Benutzer anzeigen", fr: "Voir les utilisateurs" },
+  "users.moderate": { ar: "إشراف المستخدمين", en: "Moderate users", de: "Benutzer moderieren", fr: "Modérer les utilisateurs" },
+  "users.erase": { ar: "حذف بيانات المستخدم", en: "Erase user data", de: "Benutzerdaten löschen", fr: "Effacer les données utilisateur" },
+  "groups.read": { ar: "عرض المجموعات", en: "View groups", de: "Gruppen anzeigen", fr: "Voir les groupes" },
+  "groups.manage": { ar: "إدارة المجموعات", en: "Manage groups", de: "Gruppen verwalten", fr: "Gérer les groupes" },
+  "groups.moderate": { ar: "الإشراف على المجموعات", en: "Moderate groups", de: "Gruppen moderieren", fr: "Modérer les groupes" },
+  "ai.read": { ar: "عرض إعدادات الذكاء الاصطناعي", en: "View AI settings", de: "KI-Einstellungen anzeigen", fr: "Voir les paramètres IA" },
+  "ai.manage": { ar: "إدارة الذكاء الاصطناعي", en: "Manage AI", de: "KI verwalten", fr: "Gérer l’IA" },
+  "stats.read": { ar: "عرض الإحصاءات", en: "View statistics", de: "Statistiken anzeigen", fr: "Voir les statistiques" },
+  "logs.read": { ar: "عرض السجلات", en: "View logs", de: "Protokolle anzeigen", fr: "Voir les journaux" },
+  "backup.create": { ar: "إنشاء نسخة احتياطية", en: "Create backup", de: "Backup erstellen", fr: "Créer une sauvegarde" },
+  "backup.restore": { ar: "استعادة نسخة احتياطية", en: "Restore backup", de: "Backup wiederherstellen", fr: "Restaurer une sauvegarde" },
+  "admins.read": { ar: "عرض المشرفين", en: "View administrators", de: "Administratoren anzeigen", fr: "Voir les administrateurs" },
+  "admins.manage": { ar: "إدارة المشرفين", en: "Manage administrators", de: "Administratoren verwalten", fr: "Gérer les administrateurs" },
+  "roles.manage": { ar: "إدارة الرتب", en: "Manage roles", de: "Rollen verwalten", fr: "Gérer les rôles" },
+  "translations.manage": { ar: "إدارة الترجمات", en: "Manage translations", de: "Übersetzungen verwalten", fr: "Gérer les traductions" },
+  "security.manage": { ar: "إدارة الأمان", en: "Manage security", de: "Sicherheit verwalten", fr: "Gérer la sécurité" }
+});
+export const RBAC_PERMISSION_IDS = Object.freeze(Object.keys(RBAC_PERMISSION_LABELS));
+export function rolePermissions(role) { return [...(RBAC_ROLES[role]?.permissions || [])]; }
+export function permissionLabel(permission, language = "ar") { return RBAC_PERMISSION_LABELS[permission]?.[language] || RBAC_PERMISSION_LABELS[permission]?.en || permission; }
+export function normalizePermissionSet(value) {
+  const list = Array.isArray(value) ? value : Object.entries(value || {}).filter(([, enabled]) => enabled === true).map(([key]) => key);
+  return [...new Set(list.filter(key => RBAC_PERMISSION_IDS.includes(key)))];
+}
+export function hasRbacPermission({ role = "member", permissions = {}, permission, isPrimaryOwner = false } = {}) {
+  if (isPrimaryOwner) return true;
+  if (!RBAC_PERMISSION_IDS.includes(permission)) return false;
+  const explicit = normalizePermissionSet(permissions);
+  // Explicit lists override role defaults, allowing deliberate restrictions.
+  const hasExplicitList = Array.isArray(permissions) || Object.keys(permissions || {}).some(k => RBAC_PERMISSION_IDS.includes(k));
+  const granted = hasExplicitList ? explicit : rolePermissions(role);
+  return granted.includes(permission);
+}
+
