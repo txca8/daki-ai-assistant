@@ -1652,4 +1652,177 @@ async function handleMessage(env, msg, business) {
   const continuationKey = continuationStateKey(msg, actorId, business);
   const pendingContinuation = await env.DB.prepare("SELECT state_value FROM daki_state WHERE state_key=?").bind(continuationKey).first();
   if (pendingContinuation) {
-    
+    let pending = [];
+    try { pending = JSON.parse(pendingContinuation.state_value || "[]"); } catch (_) {}
+    if (Array.isArray(pending) && pending.length && isContinueRequest(messageText)) {
+      const nextPart = String(pending.shift() || "");
+      if (pending.length) {
+        await env.DB.prepare("UPDATE daki_state SET state_value=?,updated_at=CURRENT_TIMESTAMP WHERE state_key=?")
+          .bind(JSON.stringify(pending), continuationKey).run();
+      } else {
+        await env.DB.prepare("DELETE FROM daki_state WHERE state_key=?").bind(continuationKey).run();
+      }
+      await sendAnswerPart(env, chatId, nextPart, msg, business, pending.length > 0);
+      return;
+    }
+    // A different message starts a new request; discard the old continuation.
+    await env.DB.prepare("DELETE FROM daki_state WHERE state_key=?").bind(continuationKey).run();
+  }
+  if (command?.name === "start" && !isGroup) {
+    await markWelcomed(env, chatId, actorId, connectionId);
+    await sendWelcome(env, msg, business);
+    return;
+  }
+  if (business && command?.name === "start") return;
+  const existingHandoffKey = conversationKey(chatId, connectionId, actorId, business);
+  const existingHandoffConversation = await env.DB.prepare(
+    "SELECT id FROM conversations WHERE conversation_key=?"
+  ).bind(existingHandoffKey).first();
+  const handoffHistory = existingHandoffConversation
+    ? await loadHistory(env, existingHandoffConversation.id)
+    : [];
+  if (!command && actorId !== OWNER_ID &&
+      await detectHumanHandoffIntent(env, messageText, handoffHistory)) {
+    const displayName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(" ") || "غير معروف";
+    const username = msg.from.username ? "@" + msg.from.username : "بدون اسم مستخدم";
+    const contextLabel = business ? "Telegram Business" : (isGroup ? "مجموعة" : "محادثة البوت");
+    const ownerNotice = `طلب تواصل بشري جديد إلى السيدة داكي\nالاسم: ${displayName}\nالمعرف: ${username}\nTelegram ID: ${actorId}\nالمحادثة: ${contextLabel}\nChat ID: ${chatId}\n\nنص الطلب: ${messageText.slice(0, 1200)}`;
+    let notified = false;
+    try {
+      await sendMessage(env, OWNER_ID, ownerNotice);
+      notified = true;
+    } catch (notifyError) {
+      await logError(env, "HUMAN_HANDOFF_NOTIFY", notifyError, `user=${actorId}, chat=${chatId}`);
+    }
+    if (!notified) {
+      await sendMessage(env, chatId,
+        "أعتذر، لم أتمكن من إيصال طلبك تلقائياً إلى السيدة داكي. يرجى مراسلة قناة Daki Schule مباشرة. لم أوقف المساعد في هذه المحادثة.",
+        { ...replyOptions(msg, business), reply_markup: { inline_keyboard: [[{ text: "Daki Schule", url: CHANNEL_URL }]] } });
+      return;
+    }
+    const until = nowTs() + 10 * 60 * 60;
+    await env.DB.prepare(`INSERT INTO daki_state(state_key,state_value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
+      ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at=CURRENT_TIMESTAMP`)
+      .bind(stateKey, String(until)).run();
+    await sendMessage(env, chatId,
+      "لقد تواصلت بالفعل مع السيدة Daki، وستستجيب لك قريباً.\n\nإذا أردت عودة المساعد قبل ذلك، اضغط على زر /bot أو أرسل الأمر /bot، ثم أرسل رسالة جديدة لاستئناف المحادثة. لن أرد على الرسائل التي ترسلها أثناء فترة التوقف.",
+      { ...replyOptions(msg, business), reply_markup: channelKeyboard(true) });
+    return;
+  }
+
+  // First private/business contact receives one concise welcome instead of a second AI reply.
+  if (!command && !isGroup && actorId !== OWNER_ID &&
+      !(await hasWelcomed(env, chatId, actorId, connectionId))) {
+    await markWelcomed(env, chatId, actorId, connectionId);
+    await sendWelcome(env, msg, business);
+    return;
+  }
+
+  if (msg.document && actorId === OWNER_ID && /\/restore\b/i.test(msg.caption || "")) {
+    try {
+      const count = await restoreBackup(env, msg, actorId);
+      await sendMessage(env, chatId, `اكتملت الاستعادة الدمجية. السجلات التي تمت مراجعتها: ${count}.`, replyOptions(msg, business));
+    } catch (e) {
+      await sendMessage(env, chatId, `فشلت الاستعادة: ${e.message}`, replyOptions(msg, business));
+    }
+    return;
+  }
+
+  if (command) {
+    const handled = await commandReply(env, msg, business, actorId, command);
+    if (handled) return;
+  }
+
+  if (await isBlocked(env, actorId)) return;
+  const mute = await env.DB.prepare("SELECT until_ts FROM mutes WHERE user_id=? AND chat_id=?")
+    .bind(actorId, String(chatId)).first();
+  if (mute && Number(mute.until_ts) > nowTs()) return;
+  if (mute) await env.DB.prepare("DELETE FROM mutes WHERE user_id=? AND chat_id=?")
+    .bind(actorId, String(chatId)).run();
+  if (isGroup) {
+    const allowed = await isGroupAllowed(env, chatId, messageText, msg.reply_to_message);
+    if (!allowed) return;
+  } else if (!business && !isPrivate(msg.chat)) {
+    return;
+  }
+
+  if (!messageText) return;
+  if (await getSetting(env, "bot_enabled", "1") !== "1") {
+    if (actorId === OWNER_ID) await sendMessage(env, chatId, "ردود DAKI متوقفة حالياً. استخدم /dakion لإعادة التشغيل.", replyOptions(msg, business));
+    return;
+  }
+  if (await getSetting(env, "maintenance", "0") === "1" && actorId !== OWNER_ID) {
+    await sendMessage(env, chatId, "DAKI في وضع الصيانة حالياً. حاول مرة أخرى لاحقاً.", replyOptions(msg, business));
+    return;
+  }
+
+  const key = conversationKey(chatId, connectionId, actorId, business);
+  const conversation = await getConversation(env, key, chatId, actorId, connectionId, msg.chat.type);
+  try {
+    const parsed = await aiReply(env, conversation.id, actorId, messageText);
+    const answer = String(parsed.reply || "").trim();
+    const parts = splitAnswerCoherently(answer, 2800);
+    if (!parts.length) throw new Error("DAKI returned an empty answer");
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) await new Promise(resolve => setTimeout(resolve, 1100));
+      try {
+        await sendAnswerPart(env, chatId, parts[i], msg, business, i < parts.length - 1);
+      } catch (formatError) {
+        if (/parse entities|can't parse|unsupported start tag|unsupported end tag/i.test(String(formatError?.message || formatError))) {
+          await sendMessage(env, chatId, parts[i], { ...replyOptions(msg, business), reply_markup: assistantControlKeyboard(false) });
+        } else {
+          throw formatError;
+        }
+      }
+    }
+  } catch (e) {
+    await logError(env, "AI_REPLY", e, `user=${actorId}, chat=${chatId}`);
+    await sendMessage(env, chatId,
+      `تعذر على DAKI إكمال هذه الرسالة بعد عدة محاولات. تم تسجيل الخطأ تقنياً. حاول مجدداً بعد قليل.`,
+      replyOptions(msg, business));
+  }
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/") {
+      return json({ ok: true, service: "DAKI", version: VERSION, status: "running" });
+    }
+    if (request.method === "GET" && (url.pathname === "/admin" || url.pathname === "/admin/")) {
+      return new Response(ADMIN_HTML, { status: 200, headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store, max-age=0",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer"
+      }});
+    }
+    if (request.method === "POST" && url.pathname === "/api/admin") {
+      await ensureSchema(env);
+      return handleAdminApi(request, env);
+    }
+    if (request.method !== "POST") return text("Method not allowed", 405);
+
+    let update;
+    try { update = await request.json(); }
+    catch (_) { return text("Invalid JSON", 400); }
+
+    try {
+      await ensureSchema(env);
+      try { await ensureTelegramCommands(env); }
+      catch (commandSetupError) { await logError(env, "TELEGRAM_COMMAND_SETUP", commandSetupError); }
+      if (update.callback_query) {
+        await handleCallback(env, update.callback_query);
+      } else if (update.business_message) {
+        await handleMessage(env, update.business_message, true);
+      } else if (update.message) {
+        await handleMessage(env, update.message, false);
+      } else if (update.edited_business_message) {
+        // Ignore edits to avoid duplicate AI responses.
+      }
+    } catch (e) {
+      await logError(env, "WEBHOOK", e, "update processing failed");
+    }
+    return text("OK", 200);
+  }
+};
