@@ -1,8 +1,8 @@
-import { ADMIN_CATEGORIES, ADMIN_COMMANDS, CHAT_ONLY_COMMANDS, WEB_COMMANDS, parseCommand, ensureTelegramCommands, createCommandSystem } from "./commands.js";
+import { ADMIN_CATEGORIES, ADMIN_COMMANDS, CHAT_ONLY_COMMANDS, WEB_COMMANDS, parseCommand, ensureTelegramCommands, createCommandSystem, RBAC_ROLES, RBAC_PERMISSION_IDS, rolePermissions, hasRbacPermission } from "./commands.js";
 
 /*
  * DAKI Telegram Business + Group Assistant
- * Version: 2.5.10
+ * Version: 2.5.11-rbac1
  * Cloudflare Worker bindings:
  *   AI  - Workers AI
  *   DB  - D1 database (daki-db)
@@ -18,7 +18,7 @@ import { ADMIN_CATEGORIES, ADMIN_COMMANDS, CHAT_ONLY_COMMANDS, WEB_COMMANDS, par
  *   personal Telegram account.
  */
 
-const VERSION = "2.5.10";
+const VERSION = "2.5.11-rbac1";
 const BOT_USERNAME = "DakiSchuleBot";
 const OWNER_USERNAME = "Daakkiiii";
 const CHANNEL = "@DakiSchule";
@@ -152,7 +152,7 @@ html,body{width:100%;min-width:0;overflow-x:hidden}body{padding-bottom:calc(76px
  host.querySelector('#refresh').onclick=()=>open('overview');host.querySelectorAll('[data-run-command]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{const r=await api('runCommand',{name:b.dataset.runCommand});toast(r.message||t('saved'));}catch(e){toast(e.message,true);}finally{b.disabled=false;}});}
  async function users(host){const r=await api('usersList');const rows=r.users||[];host.innerHTML='<div class="head"><div><h2>'+t('users')+'</h2><p>'+rows.length+' / 100</p></div><input class="input" id="uq" placeholder="'+t('search')+'"></div><div id="utable"></div>';const draw=list=>{document.getElementById('utable').innerHTML=list.length?table([t('name'),t('id'),t('language'),t('lastSeen'),t('actions')],list.map(u=>'<tr><td>'+esc(u.first_name||'—')+'<small>'+esc(u.username?'@'+u.username:'')+'</small></td><td class="ltr">'+esc(u.user_id)+'</td><td>'+esc(u.language||'—')+'</td><td>'+esc(u.last_seen||'—')+'</td><td><button class="btn '+(u.is_blocked?'':'danger')+'" data-toggle="'+esc(u.user_id)+'" data-blocked="'+(u.is_blocked?'1':'0')+'">'+t(u.is_blocked?'unblock':'block')+'</button> <button class="btn" data-forget="'+esc(u.user_id)+'">'+t('forget')+'</button></td></tr>')):noData();};draw(rows);host.querySelector('#uq').oninput=e=>{const q=e.target.value.toLowerCase();draw(rows.filter(u=>[u.user_id,u.username,u.first_name].join(' ').toLowerCase().includes(q)));};host.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=async()=>{try{await api(b.dataset.blocked==='1'?'userUnblock':'userBlock',{user_id:b.dataset.toggle});toast(t('saved'));open('users');}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-forget]').forEach(b=>b.onclick=async()=>{if(!confirm(t('confirm')))return;try{await api('userForget',{user_id:b.dataset.forget});toast(t('saved'));open('users');}catch(e){toast(e.message,true);}});}
  async function groups(host){const r=await api('groupsList');const rows=r.groups||[];host.innerHTML='<div class="head"><div><h2>'+t('groups')+'</h2><p>'+rows.length+'</p></div></div>'+ (rows.length?rows.map(g=>'<div class="rowcard"><div class="meta"><strong>'+esc(g.title||g.chat_id)+'</strong><small class="ltr">'+esc(g.chat_id)+'</small><small>'+t('status')+': '+t(g.enabled?'enabled':'disabled')+'</small></div><div class="tools"><select class="select" data-mode="'+esc(g.chat_id)+'"><option value="mention" '+(g.mode==='mention'?'selected':'')+'>'+t('mention')+'</option><option value="all" '+(g.mode==='all'?'selected':'')+'>'+t('all')+'</option></select><button class="btn" data-enable="'+esc(g.chat_id)+'" data-on="'+(g.enabled?'1':'0')+'">'+t(g.enabled?'disabled':'enabled')+'</button></div></div>').join(''):noData());host.querySelectorAll('[data-mode]').forEach(el=>el.onchange=async()=>{try{await api('groupUpdate',{chat_id:el.dataset.mode,mode:el.value});toast(t('saved'));}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-enable]').forEach(b=>b.onclick=async()=>{try{await api('groupUpdate',{chat_id:b.dataset.enable,enabled:b.dataset.on!=='1'});toast(t('saved'));open('groups');}catch(e){toast(e.message,true);}});}
- async function admins(host){const r=await api('adminsList');const rows=r.admins||[];host.innerHTML='<div class="panel"><div class="head"><h2>'+t('add')+' '+t('admin')+'</h2></div><div class="tools"><input class="input ltr" id="newAdmin" placeholder="Telegram ID"><select class="select" id="newRole"><option value="admin">'+t('admin')+'</option><option value="owner">'+t('owner')+'</option></select><button class="btn primary" id="addAdmin">'+t('add')+'</button></div></div><div id="alist"></div>';document.getElementById('alist').innerHTML=rows.length?rows.map(a=>'<div class="rowcard"><div class="meta"><strong class="ltr">'+esc(a.user_id)+'</strong><small>'+esc(a.role)+' · '+esc(a.permissions_json||'{}')+'</small></div><div class="tools">'+(String(a.user_id)===OWNER?'': '<button class="btn" data-perms="'+esc(a.user_id)+'">'+t('permissions')+'</button><button class="btn danger" data-remove="'+esc(a.user_id)+'">'+t('remove')+'</button>')+'</div></div>').join(''):noData();document.getElementById('addAdmin').onclick=async()=>{const id=document.getElementById('newAdmin').value.trim();try{await api('adminAdd',{user_id:id,role:document.getElementById('newRole').value});toast(t('saved'));open('admins');}catch(e){toast(e.message,true);}};host.querySelectorAll('[data-remove]').forEach(b=>b.onclick=async()=>{if(!confirm(t('confirm')))return;try{await api('adminRemove',{user_id:b.dataset.remove});toast(t('saved'));open('admins');}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-perms]').forEach(b=>b.onclick=async()=>{const value=prompt('control, users, moderation, ai, admins, groups, stats, maintenance');if(value===null)return;try{await api('adminPermissions',{user_id:b.dataset.perms,permissions:value.split(',').map(x=>x.trim()).filter(Boolean)});toast(t('saved'));open('admins');}catch(e){toast(e.message,true);}});}
+ async function admins(host){const r=await api('adminsList');const rows=r.admins||[];host.innerHTML='<div class="panel"><div class="head"><h2>'+t('add')+' '+t('admin')+'</h2></div><div class="tools"><input class="input ltr" id="newAdmin" placeholder="Telegram ID"><select class="select" id="newRole"><option value="admin">'+t('admin')+'</option><option value="owner">Delegated Owner</option><option value="super_admin">Super Admin</option><option value="moderator">Moderator</option><option value="support">Support</option><option value="translator">Translator</option></select><button class="btn primary" id="addAdmin">'+t('add')+'</button></div></div><div id="alist"></div>';document.getElementById('alist').innerHTML=rows.length?rows.map(a=>'<div class="rowcard"><div class="meta"><strong class="ltr">'+esc(a.user_id)+'</strong><small>'+esc(a.role)+' · '+esc(a.permissions_json||'{}')+'</small></div><div class="tools">'+(String(a.user_id)===OWNER?'': '<button class="btn" data-perms="'+esc(a.user_id)+'">'+t('permissions')+'</button><button class="btn danger" data-remove="'+esc(a.user_id)+'">'+t('remove')+'</button>')+'</div></div>').join(''):noData();document.getElementById('addAdmin').onclick=async()=>{const id=document.getElementById('newAdmin').value.trim();try{await api('adminAdd',{user_id:id,role:document.getElementById('newRole').value});toast(t('saved'));open('admins');}catch(e){toast(e.message,true);}};host.querySelectorAll('[data-remove]').forEach(b=>b.onclick=async()=>{if(!confirm(t('confirm')))return;try{await api('adminRemove',{user_id:b.dataset.remove});toast(t('saved'));open('admins');}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-perms]').forEach(b=>b.onclick=async()=>{const value=prompt('control, users, moderation, ai, admins, groups, stats, maintenance');if(value===null)return;try{await api('adminPermissions',{user_id:b.dataset.perms,permissions:value.split(',').map(x=>x.trim()).filter(Boolean)});toast(t('saved'));open('admins');}catch(e){toast(e.message,true);}});}
  async function memory(host){const r=await api('instructionsList');const rows=r.instructions||[];host.innerHTML='<div class="panel"><div class="field"><label>'+t('newInstruction')+'</label><textarea class="area" id="newInst"></textarea></div><button class="btn primary" id="addInst">'+t('add')+'</button></div><div id="ilist"></div>';document.getElementById('ilist').innerHTML=rows.length?rows.map(x=>'<div class="rowcard"><div class="meta"><strong>#'+x.id+' · '+t(x.active?'enabled':'disabled')+'</strong><small>'+esc(x.instruction)+'</small></div><div class="tools"><button class="btn" data-edit="'+x.id+'">'+t('edit')+'</button><button class="btn danger" data-del="'+x.id+'">'+t('delete')+'</button></div></div>').join(''):noData();document.getElementById('addInst').onclick=async()=>{try{await api('instructionAdd',{instruction:document.getElementById('newInst').value});toast(t('saved'));open('memory');}catch(e){toast(e.message,true);}};host.querySelectorAll('[data-edit]').forEach(b=>b.onclick=async()=>{const old=rows.find(x=>String(x.id)===b.dataset.edit);const value=prompt(t('instruction'),old.instruction);if(value===null)return;try{await api('instructionUpdate',{id:old.id,instruction:value});toast(t('saved'));open('memory');}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{if(!confirm(t('confirm')))return;try{await api('instructionDelete',{id:b.dataset.del});toast(t('saved'));open('memory');}catch(e){toast(e.message,true);}});}
  async function stats(host){const r=await api('statsData'),s=r.stats;host.innerHTML='<div class="metrics">'+[['userCount',s.users],['groupCount',s.groups],['messages',s.messages],['errorCount',s.errors]].map(x=>'<div class="metric"><span>'+t(x[0])+'</span><strong>'+x[1]+'</strong></div>').join('')+'</div><div class="head"><h2>'+t('audit')+'</h2></div>'+((r.audit||[]).length?table(['ID','Action','Actor','Target','Date'],r.audit.map(x=>'<tr><td>'+x.id+'</td><td>'+esc(x.action)+'</td><td>'+esc(x.actor_id)+'</td><td>'+esc(x.target_id||'—')+'</td><td>'+esc(x.created_at)+'</td></tr>')):noData())+'<div class="head"><h2>'+t('errors')+'</h2></div>'+((r.errorRows||[]).length?table(['ID','Type','Message','Date'],r.errorRows.map(x=>'<tr><td>'+x.id+'</td><td>'+esc(x.error_type)+'</td><td>'+esc(x.error_message)+'</td><td>'+esc(x.created_at)+'</td></tr>')):noData());}
  function backup(host){host.innerHTML='<div class="panel"><h2>'+t('export')+'</h2><p class="muted">'+t('restoreNote')+'</p><button class="btn primary" id="export">'+t('export')+'</button></div><div class="panel"><h2>'+t('restore')+'</h2><input class="input" type="file" id="backupFile" accept="application/json,.json"><div class="tools"><button class="btn danger" id="restore">'+t('restore')+'</button></div></div>';document.getElementById('export').onclick=async()=>{try{const r=await api('backupExport');const blob=new Blob([JSON.stringify(r.backup,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='daki-backup-'+new Date().toISOString().slice(0,10)+'.json';a.click();URL.revokeObjectURL(url);toast(t('saved'));}catch(e){toast(e.message,true);}};document.getElementById('restore').onclick=async()=>{const f=document.getElementById('backupFile').files[0];if(!f){toast(t('chooseFile'),true);return;}if(f.size>1500000){toast('ملف النسخة أكبر من الحد المسموح (1.5 MB).',true);return;}if(!confirm(t('confirm')))return;try{const backup=JSON.parse(await f.text());const r=await api('backupRestore',{backup});toast(t('saved')+' '+r.restored); }catch(e){toast(e.message,true);}};}
@@ -497,14 +497,21 @@ const COMMAND_SYSTEM = createCommandSystem({
 });
 const commandReply = COMMAND_SYSTEM.execute;
 
+const ADMIN_API_PERMISSION = Object.freeze({
+  overview: "dashboard.overview", usersList: "users.read", userBlock: "users.moderate", userUnblock: "users.moderate", userForget: "users.erase",
+  groupsList: "groups.read", groupUpdate: "groups.manage", adminsList: "admins.read", adminAdd: "admins.manage", adminRemove: "admins.manage", adminPermissions: "roles.manage",
+  instructionsList: "ai.read", instructionAdd: "ai.manage", instructionUpdate: "ai.manage", instructionDelete: "ai.manage", settingsGet: "ai.read", settingsSet: "ai.manage",
+  statsData: "stats.read", auditList: "logs.read", errorsList: "logs.read", backupExport: "backup.create", backupRestore: "backup.restore", customList: "ai.read", saveCommand: "ai.manage", deleteCommand: "ai.manage", runCommand: "dashboard.access"
+});
 async function handleAdminApi(request, env) {
   let body;
   try { body = await request.json(); } catch (_) { return json({ ok: false, error: "Invalid JSON" }, 400); }
   const verified = await validateWebAppInitData(String(body?.initData || ""), env.TELEGRAM_BOT_TOKEN);
   if (!verified) return json({ ok: false, error: "تعذر التحقق من جلسة Telegram. أعد فتح اللوحة من Telegram." }, 401);
   const actorId = String(verified.user.id);
-  if (actorId !== OWNER_ID) return json({ ok: false, error: "هذا الحساب غير مخوّل لإدارة DAKI." }, 403);
   const action = String(body?.action || "");
+  const requiredPermission = ADMIN_API_PERMISSION[action] || "dashboard.access";
+  if (!(await hasPermission(env, actorId, requiredPermission))) return json({ ok: false, error: "ليس لديك الإذن اللازم لتنفيذ هذه العملية." }, 403);
   if (action === "runCommand") {
     const name = String(body?.name || "").toLowerCase();
     if (!WEB_COMMANDS.has(name) || CHAT_ONLY_COMMANDS.has(name)) return json({ ok: false, error: "هذا الأمر يتطلب تنفيذه داخل المحادثة أو يحتاج إلى بيانات إضافية." }, 400);
@@ -579,13 +586,15 @@ async function handleAdminApi(request, env) {
       const rows = await env.DB.prepare("SELECT user_id,role,permissions_json,added_by,created_at FROM admins ORDER BY created_at").all();
       const admins = rows.results || [];
       if (!admins.some(a => String(a.user_id) === OWNER_ID)) admins.unshift({ user_id: OWNER_ID, role: "primary_owner", permissions_json: '{"all":true}', added_by: "system" });
-      return json({ ok: true, admins });
+      return json({ ok: true, admins, roles: RBAC_ROLES, permission_ids: RBAC_PERMISSION_IDS });
     }
     if (action === "adminAdd") {
       const id = String(body.user_id || "").trim();
       if (!/^\d+$/.test(id) || id === OWNER_ID) return json({ ok: false, error: "معرّف المشرف غير صالح." }, 400);
-      const role = body.role === "owner" ? "owner" : "admin";
-      const permissions = role === "owner" ? { all: true } : { admin: true, users: true, moderation: true };
+      const role = Object.prototype.hasOwnProperty.call(RBAC_ROLES, body.role) ? body.role : "admin";
+      if (role === "owner" && actorId !== OWNER_ID) return json({ ok: false, error: "إنشاء مالك مفوّض متاح للمالك الرئيسي فقط." }, 403);
+      const permissions = rolePermissions(role);
+      for (const permission of permissions) if (!(await hasPermission(env, actorId, permission))) return json({ ok: false, error: "لا يمكنك منح صلاحيات لا تملكها." }, 403);
       await env.DB.prepare("INSERT OR REPLACE INTO admins(user_id,role,permissions_json,added_by) VALUES(?,?,?,?)")
         .bind(id, role, JSON.stringify(permissions), actorId).run();
       await audit(env, actorId, "admin_add_miniapp", id, "", role);
@@ -600,13 +609,15 @@ async function handleAdminApi(request, env) {
     }
     if (action === "adminPermissions") {
       const id = String(body.user_id || "").trim();
-      const allowed = new Set(["control","users","moderation","ai","admins","groups","stats","maintenance"]);
+      const legacy = { control: ["dashboard.access", "dashboard.overview"], users: ["users.read", "users.moderate"], moderation: ["users.moderate", "groups.moderate"], ai: ["ai.read", "ai.manage"], admins: ["admins.read", "admins.manage", "roles.manage"], groups: ["groups.read", "groups.manage"], stats: ["stats.read"], maintenance: ["logs.read", "backup.create"] };
       const requested = Array.isArray(body.permissions) ? body.permissions : [];
-      if (!/^\d+$/.test(id) || id === OWNER_ID || requested.some(x => !allowed.has(x))) return json({ ok: false, error: "بيانات الصلاحيات غير صالحة." }, 400);
-      const perms = { admin: true };
-      for (const key of requested) perms[key] = true;
-      await env.DB.prepare("UPDATE admins SET permissions_json=? WHERE user_id=?").bind(JSON.stringify(perms), id).run();
-      await audit(env, actorId, "admin_permissions_miniapp", id, "", JSON.stringify(perms));
+      const expanded = [...new Set(requested.flatMap(key => legacy[key] || (RBAC_PERMISSION_IDS.includes(key) ? [key] : ["__invalid__"])))];
+      if (!/^\d+$/.test(id) || id === OWNER_ID || expanded.includes("__invalid__")) return json({ ok: false, error: "بيانات الصلاحيات غير صالحة." }, 400);
+      for (const permission of expanded) if (!(await hasPermission(env, actorId, permission))) return json({ ok: false, error: "لا يمكنك منح صلاحيات لا تملكها." }, 403);
+      const target = await getAdmin(env, id);
+      if (!target) return json({ ok: false, error: "المستخدم المستهدف ليس مشرفاً مسجلاً." }, 404);
+      await env.DB.prepare("UPDATE admins SET permissions_json=? WHERE user_id=?").bind(JSON.stringify(expanded), id).run();
+      await audit(env, actorId, "admin_permissions_miniapp", id, "", JSON.stringify(expanded));
       return json({ ok: true });
     }
     if (action === "instructionsList") {
@@ -767,13 +778,18 @@ async function getAdmin(env, userId) {
 async function isOwner(env, userId) {
   return String(userId) === OWNER_ID;
 }
+const LEGACY_PERMISSION_MAP = Object.freeze({
+  admin: "dashboard.access", control: "dashboard.access", users: "users.read", moderation: "users.moderate", ai: "ai.read", admins: "admins.read", groups: "groups.read", stats: "stats.read", maintenance: "logs.read"
+});
 async function hasPermission(env, userId, permission) {
   if (await isOwner(env, userId)) return true;
   const admin = await getAdmin(env, userId);
   if (!admin) return false;
   let perms = {};
   try { perms = JSON.parse(admin.permissions_json || "{}"); } catch (_) {}
-  return perms.all === true || perms[permission] === true || admin.role === "owner";
+  if (perms.all === true) return true; // Preserve explicit legacy all-grants only.
+  const canonical = LEGACY_PERMISSION_MAP[permission] || permission;
+  return hasRbacPermission({ role: admin.role, permissions: perms, permission: canonical, isPrimaryOwner: false });
 }
 async function upsertUser(env, from) {
   if (!from?.id) return;
