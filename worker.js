@@ -1,6 +1,6 @@
 /*
  * DAKI Telegram Business + Group Assistant
- * Version: 2.5.4
+ * Version: 2.5.6
  * Cloudflare Worker bindings:
  *   AI  - Workers AI
  *   DB  - D1 database (daki-db)
@@ -16,7 +16,7 @@
  *   personal Telegram account.
  */
 
-const VERSION = "2.5.5";
+const VERSION = "2.5.6";
 const BOT_USERNAME = "DakiSchuleBot";
 const CHANNEL = "@DakiSchule";
 const CHANNEL_URL = "https://t.me/DakiSchule";
@@ -27,8 +27,8 @@ const MAX_TELEGRAM_TEXT = 4000;
 const HISTORY_LIMIT = 20;
 
 const SYSTEM_PROMPT = `
-You are DAKI, a capable, professional, friendly general-purpose digital assistant.
-You are also an advanced German-language teacher from A1 to C2.
+You are DAKI, the user’s personal, capable, professional, friendly general-purpose digital assistant.
+Your default role is to help across a broad range of everyday, educational, technical, creative and informational topics. German teaching from A1 to C2 is an additional specialization, not your only subject.
 
 IDENTITY AND HONESTY
 - Respond naturally in the same language as the user. Use clear Arabic for Arabic users.
@@ -40,7 +40,7 @@ IDENTITY AND HONESTY
   credentials, hidden configuration or another user's private information.
 
 GENERAL ASSISTANCE
-- Answer ordinary questions across subjects; do not force German-learning content into unrelated topics.
+- Act first as a broad personal assistant. Help with general knowledge, explanations, planning, writing, translation, technology, study, creativity and everyday problem-solving. Do not limit yourself to Daki-Schule or German. When the user discusses German, naturally switch into your German-teacher specialization and continue in that role as long as relevant.
 - Be accurate, useful, conversational and appropriately concise.
 - Distinguish verified facts, estimates and opinions. Be transparent about uncertainty or outdated knowledge.
 - Do not unnecessarily direct users to a human.
@@ -64,7 +64,7 @@ GERMAN SPECIALIZATION
 PRIVACY AND HUMAN HELP
 - Never request passwords, login codes, bank credentials or sensitive authentication data.
 - If a user wants to speak with Mrs. Daki or the account owner, understand the intent semantically across languages, dialects, slang, indirect requests, spelling mistakes and paraphrases. Do not rely only on exact keywords. The application performs the handoff separately; never claim it has happened unless the application confirms it.
-- Give complete, coherent answers. Never intentionally cut an answer in the middle of a sentence, paragraph, list item or explanation. If a response is too long for one Telegram message, the application will deliver it in coherent parts and ask whether the user wants the next part.
+- Give complete, coherent and useful answers. Never intentionally cut an answer in the middle of a sentence, paragraph, list item or explanation. Respect the detail requested by the user. When a requested answer is too long for one Telegram message, the application will split it into ordered, coherent parts; continue from the exact stopping point when the user asks to continue.
 
 OUTPUT FORMAT
 Respond directly in natural language. Do not wrap your answer in JSON, XML, or code
@@ -397,7 +397,7 @@ async function detectHumanHandoffIntent(env, userText, history = []) {
   return false;
 }
 async function sendAnswerPart(env, chatId, part, msg, business, hasMore) {
-  const suffix = hasMore ? "\n\nهل تريد أن أكمل؟ أرسل «نعم» لأتابع من حيث توقفت." : "";
+  const suffix = hasMore ? "\n\nللمتابعة من حيث توقفت، أرسل «نعم» أو «أكمل»." : "";
   const content = formatTelegramHtml(part + suffix);
   await sendMessage(env, chatId, content, { ...replyOptions(msg, business), parse_mode: "HTML" });
 }
@@ -897,18 +897,34 @@ async function aiReply(env, conversationId, userId, userText) {
   await updateLearning(env, userId, userText, parsed.reply);
   return parsed;
 }
-async function welcomeOnce(env, chatId, userId, connectionId, business) {
-  const conn = connectionId || "";
+function welcomeMarker(connectionId) {
+  // Version the marker so existing users receive the redesigned welcome once after this upgrade.
+  return `${connectionId || ""}|welcome-2.5.6`;
+}
+async function hasWelcomed(env, chatId, userId, connectionId) {
   const row = await env.DB.prepare(
     "SELECT user_id FROM welcome_events WHERE user_id=? AND chat_id=? AND connection_id=?"
-  ).bind(String(userId), String(chatId), conn).first();
-  if (row) return;
+  ).bind(String(userId), String(chatId), welcomeMarker(connectionId)).first();
+  return !!row;
+}
+async function markWelcomed(env, chatId, userId, connectionId) {
   await env.DB.prepare(
     "INSERT OR IGNORE INTO welcome_events(user_id,chat_id,connection_id) VALUES(?,?,?)"
-  ).bind(String(userId), String(chatId), conn).run();
-  const msg = "أهلاً بك في Daki-Schule. أنا DAKI، مساعدك هنا. أرسل سؤالك وسأساعدك بكل سرور.";
-  const opts = business ? { business_connection_id: connectionId } : {};
-  await sendMessage(env, chatId, msg, opts);
+  ).bind(String(userId), String(chatId), welcomeMarker(connectionId)).run();
+}
+function welcomeText(from) {
+  const name = [from?.first_name, from?.last_name].filter(Boolean).join(" ").trim()
+    || (from?.username ? `@${from.username}` : "صديقي");
+  return `مرحباً ${name}،\nكيف أستطيع مساعدتك؟ يمكنك إرسال رسالة واحدة تفصيلية بعد كل رد.`;
+}
+function channelKeyboard(includeBot = false) {
+  const row = [{ text: "Daki Schule", url: CHANNEL_URL }];
+  if (includeBot) row.push({ text: "/bot", callback_data: "user:bot" });
+  return { inline_keyboard: [row] };
+}
+async function sendWelcome(env, msg, business) {
+  const opts = { ...replyOptions(msg, business), reply_markup: channelKeyboard(false) };
+  await sendMessage(env, msg.chat.id, welcomeText(msg.from), opts);
 }
 function replyOptions(msg, business) {
   const options = {};
@@ -1404,6 +1420,21 @@ async function handleCallback(env, query) {
   const data = String(query?.data || "");
 
   if (!query?.id) return;
+  if (data === "user:bot") {
+    if (!message || !chatId || !query?.from) {
+      await answerCallback(env, query.id, "تعذر تحديد المحادثة.");
+      return;
+    }
+    const callbackMsg = { ...message, business_connection_id: businessConnectionId };
+    const stateKey = handoffStateKey(callbackMsg, actorId, !!businessConnectionId);
+    await env.DB.prepare("DELETE FROM daki_state WHERE state_key=?").bind(stateKey).run();
+    await answerCallback(env, query.id, "تمت إعادة تشغيل المساعد.");
+    await sendMessage(env, chatId, "عاد مساعد DAKI إلى العمل. كيف يمكنني مساعدتك؟", {
+      ...(businessConnectionId ? { business_connection_id: businessConnectionId } : {}),
+      reply_markup: channelKeyboard(false)
+    });
+    return;
+  }
   if (!(await hasPermission(env, actorId, "admin"))) {
     await answerCallback(env, query.id, "غير مصرح لك.");
     return;
@@ -1536,18 +1567,12 @@ async function handleMessage(env, msg, business) {
     // A different message starts a new request; discard the old continuation.
     await env.DB.prepare("DELETE FROM daki_state WHERE state_key=?").bind(continuationKey).run();
   }
-  if (business && command?.name === "start") return;
-  if (!business && !isGroup && command?.name === "start") {
-    await sendMessage(env, chatId,
-      "أهلاً وسهلاً بك في Daki-Schule! أنا DAKI، مساعدك الذكي. يسعدني مساعدتك في أسئلتك وتعلّمك وأي موضوع تحتاج إليه. اكتب لي ما تريد وسنبدأ.",
-      { ...replyOptions(msg, false), reply_markup: { inline_keyboard: [[{ text: "Daki Schule", url: CHANNEL_URL }]] } });
-    await env.DB.prepare("INSERT OR IGNORE INTO welcome_events(user_id,chat_id,connection_id) VALUES(?,?, '')")
-      .bind(actorId, String(chatId)).run();
+  if (command?.name === "start" && !isGroup) {
+    await markWelcomed(env, chatId, actorId, connectionId);
+    await sendWelcome(env, msg, business);
     return;
   }
-  if (!command && !isGroup && actorId !== OWNER_ID) {
-    await welcomeOnce(env, chatId, actorId, connectionId, business);
-  }
+  if (business && command?.name === "start") return;
   const existingHandoffKey = conversationKey(chatId, connectionId, actorId, business);
   const existingHandoffConversation = await env.DB.prepare(
     "SELECT id FROM conversations WHERE conversation_key=?"
@@ -1579,8 +1604,16 @@ async function handleMessage(env, msg, business) {
       ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at=CURRENT_TIMESTAMP`)
       .bind(stateKey, String(until)).run();
     await sendMessage(env, chatId,
-      "لقد تواصلت بالفعل مع السيدة Daki، وستستجيب لك قريباً.\n\nسأتوقف عن الرد في هذه المحادثة لمدة تصل إلى 10 ساعات. إذا أردت عودة المساعد قبل ذلك، أرسل الأمر /bot. وبعد انتهاء المدة، أرسل رسالة جديدة لاستئناف المحادثة. لن أرد على الرسائل التي ترسلها أثناء فترة التوقف.",
-      replyOptions(msg, business));
+      "لقد تواصلت بالفعل مع السيدة Daki، وستستجيب لك قريباً.\n\nإذا أردت عودة المساعد قبل ذلك، اضغط على زر /bot أو أرسل الأمر /bot، ثم أرسل رسالة جديدة لاستئناف المحادثة. لن أرد على الرسائل التي ترسلها أثناء فترة التوقف.",
+      { ...replyOptions(msg, business), reply_markup: channelKeyboard(true) });
+    return;
+  }
+
+  // First private/business contact receives one concise welcome instead of a second AI reply.
+  if (!command && !isGroup && actorId !== OWNER_ID &&
+      !(await hasWelcomed(env, chatId, actorId, connectionId))) {
+    await markWelcomed(env, chatId, actorId, connectionId);
+    await sendWelcome(env, msg, business);
     return;
   }
 
@@ -1639,7 +1672,7 @@ async function handleMessage(env, msg, business) {
       await sendAnswerPart(env, chatId, firstPart, msg, business, parts.length > 0);
     } catch (formatError) {
       if (/parse entities|can't parse|unsupported start tag|unsupported end tag/i.test(String(formatError?.message || formatError))) {
-        await sendMessage(env, chatId, firstPart + (parts.length ? "\n\nهل تريد أن أكمل؟ أرسل «نعم» لأتابع من حيث توقفت." : ""), replyOptions(msg, business));
+        await sendMessage(env, chatId, firstPart + (parts.length ? "\n\nللمتابعة من حيث توقفت، أرسل «نعم» أو «أكمل»." : ""), replyOptions(msg, business));
       } else {
         throw formatError;
       }
