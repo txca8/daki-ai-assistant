@@ -1,8 +1,10 @@
-import { ADMIN_CATEGORIES, ADMIN_COMMANDS, CHAT_ONLY_COMMANDS, WEB_COMMANDS, parseCommand, ensureTelegramCommands, createCommandSystem, RBAC_ROLES, RBAC_PERMISSION_IDS, rolePermissions, hasRbacPermission } from "./commands.js";
+import ADMIN_HTML from "./dashboard/admin-html.js";
+import { ADMIN_CATEGORIES, ADMIN_COMMANDS, CHAT_ONLY_COMMANDS, WEB_COMMANDS, parseCommand, ensureTelegramCommands, createCommandSystem, RBAC_ASSIGNABLE_ROLES, RBAC_PERMISSION_IDS, rolePermissions, hasRbacPermission } from "./commands.js";
+import { GROUP_MODERATION_ACTIONS, validateGroupModerationInput } from "./moderation.js";
 
 /*
  * DAKI Telegram Business + Group Assistant
- * Version: 2.5.11-rbac1
+ * Version: 2.9.8-backup-validation
  * Cloudflare Worker bindings:
  *   AI  - Workers AI
  *   DB  - D1 database (daki-db)
@@ -18,7 +20,7 @@ import { ADMIN_CATEGORIES, ADMIN_COMMANDS, CHAT_ONLY_COMMANDS, WEB_COMMANDS, par
  *   personal Telegram account.
  */
 
-const VERSION = "2.5.11-rbac1";
+const VERSION = "2.9.8-backup-validation";
 const BOT_USERNAME = "DakiSchuleBot";
 const OWNER_USERNAME = "Daakkiiii";
 const CHANNEL = "@DakiSchule";
@@ -111,80 +113,83 @@ const ADDITIONAL_SCHEMA = [
     updated_by TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(chat_id, command_name)
   )`,
+  `CREATE TABLE IF NOT EXISTS system_config (
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    config_key TEXT NOT NULL, config_value TEXT NOT NULL,
+    updated_by TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(system_scope, config_key)
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_instructions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    instruction TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_bans (
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    user_id TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', blocked_by TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(system_scope,user_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_users (
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    user_id TEXT NOT NULL, username TEXT, first_name TEXT, language TEXT,
+    last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(system_scope,user_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_groups (
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    chat_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
+    mode TEXT NOT NULL DEFAULT 'mention', updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(system_scope,chat_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    rule_type TEXT NOT NULL, rule_value TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(system_scope,rule_type,rule_value)
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_rate_limits (
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    user_id TEXT NOT NULL, window_started INTEGER NOT NULL, request_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(system_scope,user_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_mutes (
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    user_id TEXT NOT NULL, chat_id TEXT NOT NULL, until_ts INTEGER NOT NULL,
+    reason TEXT, muted_by TEXT, PRIMARY KEY(system_scope,user_id,chat_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_usage_stats (
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    user_id TEXT NOT NULL, event_type TEXT NOT NULL, event_date TEXT NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(system_scope,user_id,event_type,event_date)
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_learning_profiles (
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    user_id TEXT NOT NULL, total_exercises INTEGER NOT NULL DEFAULT 0,
+    progress_notes TEXT NOT NULL DEFAULT '', updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(system_scope,user_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_warnings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    user_id TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', issued_by TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_group_command_settings (
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    chat_id TEXT NOT NULL, command_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+    updated_by TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(system_scope,chat_id,command_name)
+  )`,
 ];
 
 
-const ADMIN_HTML = `<!doctype html>
-<html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"><meta name="theme-color" content="#0b1020"><title>DAKI Control Center</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
-<style>
-:root{color-scheme:dark;--bg:#080d19;--panel:#101a2d;--line:#243553;--text:#f3f6ff;--muted:#93a4c2;--blue:#367cff;--cyan:#55c7ff;--danger:#ff647c;--good:#42d6a4}*{box-sizing:border-box}body{margin:0;background:radial-gradient(850px 460px at 80% -10%,#18376b55,transparent 60%),var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;min-height:100vh}button,input,textarea,select{font:inherit}button{cursor:pointer}.shell{display:grid;grid-template-columns:245px minmax(0,1fr);min-height:100vh}.side{background:#0b1323;border-inline-end:1px solid var(--line);padding:20px 14px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:22px}.brand{display:flex;align-items:center;gap:12px;padding:4px 8px}.mark{width:42px;height:42px;border-radius:13px;background:linear-gradient(145deg,#428dff,#1750c8);display:grid;place-items:center}.mark svg{width:24px;height:24px}.brand b{font-size:17px;letter-spacing:1px}.brand small{display:block;color:var(--muted);font-size:10px}.nav{display:grid;gap:5px}.nav button{display:flex;align-items:center;gap:11px;width:100%;border:1px solid transparent;color:#aebbd2;background:transparent;padding:10px 11px;border-radius:11px;text-align:start}.nav button svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8}.nav button.active,.nav button:hover{background:#1a2c4b;border-color:#294a7d;color:white}.sidefoot{margin-top:auto;border-top:1px solid var(--line);padding:14px 8px 0;color:var(--muted);font-size:11px}.main{min-width:0;padding:24px clamp(14px,3vw,36px) 42px}.wrap{max-width:1250px;margin:auto}.top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:24px}.eyebrow{font-size:10px;color:var(--cyan);letter-spacing:1.3px;font-weight:700}.top h1{font-size:26px;margin:3px 0 0}.actions{display:flex;gap:8px;align-items:center}.select,.btn,.input,.area{border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text);padding:9px 11px}.btn.primary{background:linear-gradient(135deg,#3986ff,#245bd3);border-color:#4d91ff}.btn.danger{border-color:#713747;color:#ff9bab;background:#321a28}.btn:disabled{opacity:.5;cursor:not-allowed}.panel{background:#0f192b;border:1px solid var(--line);border-radius:15px;padding:16px;margin:12px 0}.hero{padding:21px 23px;border:1px solid #2b4c7a;border-radius:16px;background:linear-gradient(110deg,#142b4b,#101b30 70%);margin-bottom:15px}.hero h2{margin:0 0 5px;font-size:19px}.hero p{margin:0;color:#aebfda}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:11px}.metric{background:linear-gradient(145deg,#121f35,#0e182a);border:1px solid var(--line);border-radius:14px;padding:15px}.metric span{color:var(--muted);font-size:12px}.metric strong{display:block;font-size:27px;margin-top:7px}.head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:22px 0 10px}.head h2{font-size:16px;margin:0}.head p{font-size:11px;color:var(--muted);margin:3px 0 0}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.rowcard{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border:1px solid #263b5a;background:#111e33;border-radius:11px;margin:8px 0;min-width:0}.rowcard .meta{min-width:0;overflow-wrap:anywhere}.rowcard strong{display:block;font-size:13px}.rowcard small{display:block;color:var(--muted);font-size:11px;margin-top:3px}.tools{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.input{min-width:0;flex:1}.area{width:100%;min-height:95px;resize:vertical}.tablewrap{overflow:auto;border:1px solid var(--line);border-radius:12px}.table{width:100%;border-collapse:collapse;min-width:600px}.table th,.table td{padding:10px 11px;text-align:start;border-bottom:1px solid #243553;font-size:12px;vertical-align:middle}.table th{color:#a9bddb;background:#121f35}.table td small{display:block;color:var(--muted)}.badge{display:inline-block;border:1px solid #2e527f;background:#152947;color:#b9d6ff;border-radius:20px;padding:2px 8px;font-size:10px}.badge.good{border-color:#245b4b;background:#143328;color:#91e7c2}.badge.bad{border-color:#704050;background:#351c29;color:#ffadbb}.empty{padding:25px;text-align:center;color:var(--muted)}.notice{border:1px solid #66532c;background:#332a18;color:#f2d79b;border-radius:10px;padding:11px;font-size:12px;margin:12px 0}.field{display:grid;gap:5px;margin:9px 0}.field label{font-size:11px;color:#b9c7dd}.field input,.field select{width:100%}.commandgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.command{background:#111e33;border:1px solid #263b5a;border-radius:10px;padding:11px}.command b{font-size:12px}.command code{display:block;color:#77b5ff;margin-top:5px;direction:ltr;text-align:left}.muted{color:var(--muted)}.hidden{display:none!important}.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#1c2d49;border:1px solid #4777b9;border-radius:10px;padding:10px 15px;z-index:30;max-width:90vw}.toast.error{border-color:#8a4052;color:#ffb1bf}.status{display:inline-flex;align-items:center;gap:6px;color:var(--good);font-size:11px}.dot{width:7px;height:7px;border-radius:50%;background:currentColor}.ltr{direction:ltr;text-align:left}.portal-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:18px}.portal-card{border:1px solid #31527e;background:linear-gradient(145deg,#142844,#0f1a2d);border-radius:16px;padding:20px;text-align:start;min-height:170px}.portal-card h2{margin:0 0 8px;font-size:18px}.portal-card p{color:var(--muted);font-size:12px;min-height:38px}.portal-card .btn{margin-top:12px}.permission-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.permission-item{display:flex;align-items:center;gap:8px;padding:9px;border:1px solid var(--line);border-radius:9px;background:#101b2e;font-size:11px;overflow-wrap:anywhere}.permission-item input{accent-color:#3986ff}.field select,.field input{width:100%}
-@media(max-width:900px){.shell{grid-template-columns:1fr}.side{position:relative;height:auto;padding:12px;border-inline-end:0;border-bottom:1px solid var(--line);gap:10px}.sidefoot{display:none}.nav{display:flex;overflow:auto}.nav button{width:auto;white-space:nowrap;padding:9px}.main{padding-top:16px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.commandgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:760px){
-html,body{width:100%;min-width:0;overflow-x:hidden}body{padding-bottom:calc(76px + env(safe-area-inset-bottom))}
-.shell{display:flex;flex-direction:column;min-height:100dvh}.side{position:relative;top:auto;flex:0 0 auto;height:auto;min-height:0;padding:10px 12px 8px;border:0;border-bottom:1px solid var(--line);gap:8px;z-index:5}
-.brand{padding:2px 3px;gap:9px}.mark{width:36px;height:36px;border-radius:10px}.mark svg{width:20px;height:20px}.brand b{font-size:15px}.brand small{font-size:9px}
-.nav{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;gap:4px;overflow-x:auto;overflow-y:hidden;padding:7px 8px calc(7px + env(safe-area-inset-bottom));background:rgba(9,16,30,.97);border-top:1px solid #2a3d5d;backdrop-filter:blur(16px);scrollbar-width:none;-webkit-overflow-scrolling:touch}
-.nav::-webkit-scrollbar{display:none}.nav button{flex:0 0 74px;min-width:74px;width:74px;min-height:49px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:3px;padding:5px 3px;border-radius:10px;font-size:10px;line-height:1.2;white-space:normal;text-align:center}.nav button svg{width:19px;height:19px;flex:0 0 auto}.sidefoot{display:none}
-.main{flex:1 0 auto;min-width:0;padding:14px 12px 24px}.wrap{width:100%;max-width:none}.top{align-items:flex-start;flex-wrap:wrap;gap:9px;margin-bottom:13px}.top h1{font-size:21px}.actions{width:100%;display:flex;justify-content:space-between;gap:8px}.actions .select{flex:1;min-width:0}.metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.commandgrid{grid-template-columns:repeat(2,minmax(0,1fr))}
-}
-@media(max-width:520px){.portal-grid{grid-template-columns:1fr}.permission-grid{grid-template-columns:1fr}
-:root{color-scheme:dark}html,body{width:100%;min-width:0;overflow-x:hidden}body{font-size:13px;padding-bottom:calc(76px + env(safe-area-inset-bottom))}
-.shell{display:block;min-height:100dvh}.side{position:relative;top:auto;height:auto;padding:10px 12px 8px;border:0;border-bottom:1px solid var(--line);gap:8px;z-index:5}
-.brand{padding:2px 3px;gap:9px}.mark{width:34px;height:34px;border-radius:10px}.mark svg{width:20px;height:20px}.brand b{font-size:15px}.brand small{font-size:9px}
-.nav{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;gap:4px;overflow-x:auto;overflow-y:hidden;padding:7px 8px calc(7px + env(safe-area-inset-bottom));background:rgba(9,16,30,.97);border-top:1px solid #2a3d5d;backdrop-filter:blur(16px);scrollbar-width:none;-webkit-overflow-scrolling:touch}
-.nav::-webkit-scrollbar{display:none}.nav button{flex:0 0 74px;min-width:74px;width:74px;min-height:49px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:3px;padding:5px 3px;border-radius:10px;font-size:10px;line-height:1.2;white-space:normal;text-align:center}.nav button svg{width:19px;height:19px;flex:0 0 auto}.sidefoot{display:none}
-.main{padding:12px 11px 22px}.wrap{width:100%;max-width:none}.top{align-items:flex-start;flex-wrap:wrap;gap:9px;margin-bottom:13px}.eyebrow{font-size:9px;letter-spacing:1px}.top h1{font-size:20px;line-height:1.25;margin-top:3px}.actions{width:100%;display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px}.select,.btn,.input,.area{max-width:100%;padding:9px 10px;font-size:13px}.actions .select{flex:1;min-width:0}.status{font-size:10px;white-space:nowrap}
-.hero{padding:14px;border-radius:13px;margin-bottom:11px}.hero h2{font-size:16px}.hero p{font-size:12px;line-height:1.5}.metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.metric{padding:10px;border-radius:11px;min-width:0}.metric span{font-size:10px}.metric strong{font-size:21px;margin-top:4px;overflow-wrap:anywhere}
-.head{margin:17px 0 8px;align-items:flex-start;flex-wrap:wrap}.head h2{font-size:14px}.head p{font-size:10px}.grid,.commandgrid{grid-template-columns:1fr;gap:7px}.panel{padding:12px;border-radius:12px;margin:9px 0}.rowcard{align-items:stretch;flex-direction:column;gap:8px;padding:10px;margin:7px 0}.rowcard .tools{width:100%;display:flex;gap:6px}.rowcard .tools .btn{flex:1;min-width:0}.tools{gap:7px}.tools>*{min-width:0}.tools .input{flex-basis:100%}.tablewrap{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}.table{min-width:540px}.table th,.table td{padding:8px;font-size:11px}.command{padding:10px}.command b{font-size:12px}.notice{font-size:11px}.field{margin:8px 0}.toast{bottom:calc(82px + env(safe-area-inset-bottom));max-width:calc(100vw - 24px);font-size:12px}
-}
-@media(max-width:360px){.nav button{flex-basis:67px;min-width:67px;width:67px}.metrics{grid-template-columns:1fr}.actions{flex-wrap:wrap}.actions .select{flex-basis:100%}}
-@media(min-width:521px) and (max-width:900px){.shell{grid-template-columns:1fr}.side{position:relative;height:auto;padding:12px;border-inline-end:0;border-bottom:1px solid var(--line);gap:10px}.sidefoot{display:none}.nav{display:flex;overflow:auto}.nav button{width:auto;white-space:nowrap;padding:9px}.main{padding-top:16px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.commandgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-</style></head><body><div class="shell"><aside class="side"><div class="brand"><div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8"><path d="M4 17.5 12 3l8 14.5H4Z"/><path d="M8.2 14.5h7.6M12 9v5.5"/></svg></div><div><b>DAKI</b><small>CONTROL CENTER</small></div></div><nav class="nav" id="nav"></nav><div class="sidefoot">DAKI SCHULE<br><span id="ownerLabel">Secure owner access</span></div></aside><main class="main"><div class="wrap"><header class="top"><div><div class="eyebrow">DAKI / ADMINISTRATION</div><h1 id="title">نظرة عامة</h1></div><div class="actions"><select class="select" id="language"><option value="ar">العربية</option><option value="de">Deutsch</option><option value="en">English</option><option value="zh">中文</option></select><span class="status"><i class="dot"></i><span id="secureLabel">المالك الرئيسي</span></span></div></header><div id="body"><div class="empty">جارٍ التحقق من جلسة Telegram...</div></div></div></main></div><div id="toast" class="toast hidden"></div>
-<script>
-(function(){
- const tg=window.Telegram&&window.Telegram.WebApp?window.Telegram.WebApp:null;if(tg){tg.ready();tg.expand();try{tg.setHeaderColor('#080d19');tg.setBackgroundColor('#080d19');}catch(e){}}
- const I={
- ar:{overview:'نظرة عامة',users:'المستخدمون',groups:'المجموعات',admins:'المشرفون والصلاحيات',memory:'تعليمات حساب Telegram Business',stats:'الإحصائيات والسجلات',backup:'النسخ الاحتياطي',settings:'إعدادات DAKI',secure:'المالك الرئيسي',welcome:'مركز تحكم DAKI',welcomeSub:'إدارة DAKI ومراجعة نشاطه من لوحة واحدة.',userCount:'المستخدمون',groupCount:'المجموعات',adminCount:'المشرفون',errorCount:'الأخطاء',messages:'الرسائل المسجلة',system:'حالة النظام',database:'قاعدة البيانات',ai:'خدمة الردود',token:'اتصال Telegram',enabled:'مفعّل',disabled:'متوقف',commands:'قائمة الأوامر',search:'بحث...',refresh:'تحديث',name:'الاسم',id:'المعرّف',language:'اللغة',lastSeen:'آخر نشاط',actions:'الإجراءات',block:'حظر',unblock:'رفع الحظر',forget:'حذف الذاكرة',mode:'النمط',mention:'عند الإشارة',all:'كل الرسائل',add:'إضافة',remove:'إزالة',role:'الدور',permissions:'الصلاحيات',owner:'مالك',admin:'مشرف',save:'حفظ',edit:'تعديل',delete:'تعطيل',instruction:'التعليمة',newInstruction:'اكتب تعليمة جديدة...',audit:'سجل الإدارة',errors:'سجل الأخطاء',export:'تنزيل نسخة JSON',restore:'استعادة نسخة JSON',restoreNote:'الاستعادة دمجية فقط: لا تحذف السجلات الحالية، ولا تستعيد صلاحيات المشرفين.',chooseFile:'اختر ملف النسخة',botEnabled:'تفعيل الردود (البوت والحساب الشخصي)',maintenance:'وضع الصيانة العام',alerts:'تنبيهات المالك',custom:'مسودات الأوامر المخصصة',cmdName:'اسم الأمر',description:'الوصف',code:'الكود',draftOnly:'تحفظ الأكواد كمسودات ولا يتم تنفيذ JavaScript حر تلقائياً.',noData:'لا توجد بيانات.',confirm:'هل أنت متأكد؟',saved:'تم الحفظ.',failed:'تعذر تنفيذ العملية.',copy:'نسخ',status:'الحالة',quick:'إجراءات النظام',commandsDesc:'أسماء الأوامر ثابتة وفق قيود Telegram، بينما تتغير الأوصاف حسب لغة المستخدم.'},
- en:{overview:'Overview',users:'Users',groups:'Groups',admins:'Admins & permissions',memory:'Owner AI instructions',stats:'Statistics & logs',backup:'Backups',settings:'DAKI settings',secure:'Primary owner',welcome:'DAKI Control Center',welcomeSub:'Manage DAKI and review its activity from one dashboard.',userCount:'Users',groupCount:'Groups',adminCount:'Admins',errorCount:'Errors',messages:'Recorded messages',system:'System status',database:'Database',ai:'Reply service',token:'Telegram connection',enabled:'Enabled',disabled:'Disabled',commands:'Command list',search:'Search...',refresh:'Refresh',name:'Name',id:'ID',language:'Language',lastSeen:'Last activity',actions:'Actions',block:'Block',unblock:'Unblock',forget:'Clear memory',mode:'Mode',mention:'On mention',all:'All messages',add:'Add',remove:'Remove',role:'Role',permissions:'Permissions',owner:'Owner',admin:'Admin',save:'Save',edit:'Edit',delete:'Disable',instruction:'Instruction',newInstruction:'Write a new instruction...',audit:'Admin audit log',errors:'Error log',export:'Download JSON backup',restore:'Restore JSON backup',restoreNote:'Restore is merge-only: existing records are not deleted and administrator permissions are not restored.',chooseFile:'Choose backup file',botEnabled:'Enable DAKI replies',maintenance:'Maintenance mode',alerts:'Owner alerts',custom:'Custom command drafts',cmdName:'Command name',description:'Description',code:'Code',draftOnly:'Code is saved as a draft; arbitrary JavaScript is never executed automatically.',noData:'No data available.',confirm:'Are you sure?',saved:'Saved.',failed:'The operation failed.',copy:'Copy',status:'Status',quick:'System actions',commandsDesc:'Command tokens remain fixed due to Telegram restrictions; descriptions change with the user language.'},
- de:{overview:'Übersicht',users:'Benutzer',groups:'Gruppen',admins:'Admins & Rechte',memory:'Speicher & Anweisungen',stats:'Statistik & Protokolle',backup:'Sicherungen',settings:'DAKI-Einstellungen',secure:'Haupteigentümer',welcome:'DAKI-Kontrollzentrum',welcomeSub:'DAKI verwalten und Aktivitäten zentral prüfen.',userCount:'Benutzer',groupCount:'Gruppen',adminCount:'Admins',errorCount:'Fehler',messages:'Erfasste Nachrichten',system:'Systemstatus',database:'Datenbank',ai:'Antwortdienst',token:'Telegram-Verbindung',enabled:'Aktiv',disabled:'Deaktiviert',commands:'Befehlsliste',search:'Suchen...',refresh:'Aktualisieren',name:'Name',id:'ID',language:'Sprache',lastSeen:'Letzte Aktivität',actions:'Aktionen',block:'Sperren',unblock:'Entsperren',forget:'Speicher löschen',mode:'Modus',mention:'Bei Erwähnung',all:'Alle Nachrichten',add:'Hinzufügen',remove:'Entfernen',role:'Rolle',permissions:'Rechte',owner:'Eigentümer',admin:'Admin',save:'Speichern',edit:'Bearbeiten',delete:'Deaktivieren',instruction:'Anweisung',newInstruction:'Neue Anweisung eingeben...',audit:'Admin-Protokoll',errors:'Fehlerprotokoll',export:'JSON-Sicherung laden',restore:'JSON-Sicherung wiederherstellen',restoreNote:'Wiederherstellung führt Datensätze zusammen; vorhandene Daten und Adminrechte werden nicht gelöscht bzw. wiederhergestellt.',chooseFile:'Sicherungsdatei wählen',botEnabled:'DAKI-Antworten aktivieren',maintenance:'Wartungsmodus',alerts:'Eigentümer-Benachrichtigungen',custom:'Entwürfe eigener Befehle',cmdName:'Befehlsname',description:'Beschreibung',code:'Code',draftOnly:'Code wird nur als Entwurf gespeichert und nie automatisch ausgeführt.',noData:'Keine Daten vorhanden.',confirm:'Sind Sie sicher?',saved:'Gespeichert.',failed:'Aktion fehlgeschlagen.',copy:'Kopieren',status:'Status',quick:'Systemaktionen',commandsDesc:'Befehlsnamen bleiben wegen Telegram-Vorgaben unverändert; Beschreibungen richten sich nach der Sprache.'},
- zh:{overview:'概览',users:'用户',groups:'群组',admins:'管理员与权限',memory:'记忆与指令',stats:'统计与日志',backup:'备份',settings:'DAKI 设置',secure:'主所有者',welcome:'DAKI 控制中心',welcomeSub:'在一个面板中管理 DAKI 并查看活动。',userCount:'用户',groupCount:'群组',adminCount:'管理员',errorCount:'错误',messages:'已记录消息',system:'系统状态',database:'数据库',ai:'回复服务',token:'Telegram 连接',enabled:'已启用',disabled:'已停用',commands:'命令列表',search:'搜索...',refresh:'刷新',name:'名称',id:'编号',language:'语言',lastSeen:'最近活动',actions:'操作',block:'封禁',unblock:'解除封禁',forget:'清除记忆',mode:'模式',mention:'被提及时',all:'所有消息',add:'添加',remove:'移除',role:'角色',permissions:'权限',owner:'所有者',admin:'管理员',save:'保存',edit:'编辑',delete:'停用',instruction:'指令',newInstruction:'输入新指令...',audit:'管理审计日志',errors:'错误日志',export:'下载 JSON 备份',restore:'恢复 JSON 备份',restoreNote:'仅合并恢复：不会删除现有记录，也不会恢复管理员权限。',chooseFile:'选择备份文件',botEnabled:'启用 DAKI 回复',maintenance:'维护模式',alerts:'所有者通知',custom:'自定义命令草稿',cmdName:'命令名称',description:'说明',code:'代码',draftOnly:'代码仅保存为草稿，不会自动执行任意 JavaScript。',noData:'没有可用数据。',confirm:'确定吗？',saved:'已保存。',failed:'操作失败。',copy:'复制',status:'状态',quick:'系统操作',commandsDesc:'受 Telegram 限制，命令名称保持固定；命令说明会随用户语言变化。'}
- };
- const NAV_OWNER=[['overview','home','dashboard.overview'],['users','users','users.read'],['groups','layers','groups.read'],['admins','shield','admins.read'],['memory','brain','ai.read'],['botProfile','sliders','ai.read'],['botInstructions','brain','ai.read'],['commands','terminal','dashboard.access'],['stats','chart','stats.read'],['backup','database','backup.create'],['settings','sliders','security.manage']];
- const NAV_ADMIN=[['role','shield','dashboard.access'],['overview','home','dashboard.overview'],['users','users','users.read'],['groups','layers','groups.read'],['botProfile','sliders','ai.read'],['botInstructions','brain','ai.read'],['commands','terminal','dashboard.access'],['stats','chart','stats.read']];
- const ICON={home:'<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-6v-7h-4v7H4a1 1 0 0 1-1-1V10Z"/>',users:'<path d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M20 21v-2a4 4 0 0 0-3-3.8M16 3.2a4 4 0 0 1 0 7.6"/>',layers:'<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/>',shield:'<path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z"/><path d="m9 12 2 2 4-4"/>',brain:'<path d="M12 18V5a3 3 0 0 0-5.8-1A4 4 0 0 0 4 11a4 4 0 0 0 3 7h5Z"/><path d="M12 18V5a3 3 0 0 1 5.8-1A4 4 0 0 1 20 11a4 4 0 0 1-3 7h-5Z"/>',chart:'<path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-5 5"/>',database:'<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',sliders:'<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',terminal:'<path d="m4 17 6-6-6-6M12 19h8"/>'};
- const OWNER='8684164437';const state={lang:'ar',section:'portal',panel:null,session:null,roles:{},permissionIds:[],commands:[],data:{}};try{state.lang=localStorage.getItem('daki-admin-language')||'ar';}catch(e){}
- const EXTRA_LABELS={portal:'الرئيسية',role:'رتبتي وصلاحياتي',botProfile:'تخصيص شخصية البوت',botInstructions:'تعليمات البوت',commands:'كليشة الأوامر'};const t=k=>(I[state.lang]&&I[state.lang][k])||I.ar[k]||EXTRA_LABELS[k]||k;const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- function toast(s,bad){const el=document.getElementById('toast');el.textContent=s;el.classList.remove('hidden','error');if(bad)el.classList.add('error');setTimeout(()=>el.classList.add('hidden'),2800)}
- async function api(action,extra){const initData=tg&&tg.initData?tg.initData:'';if(!initData)throw new Error('لم تصل بيانات التحقق من Telegram. افتح محادثة @DakiSchuleBot الخاصة وأرسل /admin ثم اضغط زر فتح اللوحة. لا تستخدم رابط المتصفح الخارجي.');const r=await fetch('/api/admin',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign({action,initData},extra||{}))});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||t('failed'));return d;}
- function icon(k){return '<svg viewBox="0 0 24 24" aria-hidden="true">'+(ICON[k]||ICON.home)+'</svg>';}
- function nav(){const host=document.getElementById('nav');if(!state.panel){host.innerHTML='';return;}const source=state.panel==='owner'?NAV_OWNER:NAV_ADMIN;const items=source.filter(x=>state.session&&state.session.is_owner||state.session&&state.session.permissions.includes(x[2]));host.innerHTML='<button data-sec="portal">'+icon('home')+'<span>الرئيسية</span></button>'+items.map(x=>'<button class="'+(state.section===x[0]?'active':'')+'" data-sec="'+x[0]+'">'+icon(x[1])+'<span>'+t(x[0])+'</span></button>').join('');host.querySelectorAll('[data-sec]').forEach(b=>b.onclick=()=>open(b.dataset.sec));}
- function setLang(){document.documentElement.lang=state.lang;document.documentElement.dir=state.lang==='ar'?'rtl':'ltr';document.getElementById('language').value=state.lang;document.getElementById('secureLabel').textContent=t('secure');nav();}
- function title(){document.getElementById('title').textContent=t(state.section);}
- function table(headers,rows){return '<div class="tablewrap"><table class="table"><thead><tr>'+headers.map(h=>'<th>'+h+'</th>').join('')+'</tr></thead><tbody>'+ (rows||[]).join('')+'</tbody></table></div>';}
- function noData(){return '<div class="empty">'+t('noData')+'</div>';}
- async function open(section){if(section==='portal'){state.panel=null;state.section='portal';nav();document.getElementById('title').textContent='Daki Admin';renderPortal();return;}state.section=section;nav();title();const host=document.getElementById('body');host.innerHTML='<div class="empty">'+t('refresh')+'...</div>';try{if(section==='overview')await overview(host);if(section==='users')await users(host);if(section==='groups')await groups(host);if(section==='admins')await admins(host);if(section==='memory')await memory(host);if(section==='botProfile')await botProfile(host);if(section==='botInstructions')await botInstructions(host);if(section==='commands')await commandsPage(host);if(section==='role')rolePage(host);if(section==='stats')await stats(host);if(section==='backup')backup(host);if(section==='settings')await settings(host);}catch(e){host.innerHTML='<div class="panel error">'+esc(e.message)+'</div>';}}
- async function overview(host){const r=await api('overview');state.commands=r.commands||[];const o=r.overview;host.innerHTML='<div class="hero"><h2>'+t('welcome')+'</h2><p>'+t('welcomeSub')+'</p></div><div class="metrics">'+[['userCount',o.users],['groupCount',o.groups],['adminCount',o.admins],['errorCount',o.errors]].map(x=>'<div class="metric"><span>'+t(x[0])+'</span><strong>'+x[1]+'</strong></div>').join('')+'</div><div class="head"><div><h2>'+t('system')+'</h2></div><button class="btn" id="refresh">'+t('refresh')+'</button></div><div class="grid">'+[['database',o.db],['ai',o.ai],['token',o.token],['botEnabled',o.bot_enabled]].map(x=>'<div class="panel"><span>'+t(x[0])+'</span><div class="status"><i class="dot"></i>'+(x[1]?t('enabled'):t('disabled'))+'</div></div>').join('')+'</div><div class="head"><div><h2>'+t('commands')+'</h2><p>'+t('commandsDesc')+'</p></div></div><div class="commandgrid">'+state.commands.map(c=>'<div class="command"><b>'+esc((c.labels&&c.labels[state.lang])||c.labels.ar)+'</b><code>/'+esc(c.name)+'</code><small>'+esc(c.description||'')+'</small><small class="muted">الاستخدام: '+esc(c.usage||('/'+c.name))+'</small><div class="tools"><span class="badge">'+esc(c.permission||'admin')+'</span><span class="badge '+(c.risk==='high'?'bad':'good')+'">'+(c.risk==='high'?'حساس':'عادي')+'</span></div>'+(c.web_enabled?'<button class="btn" data-run-command="'+esc(c.name)+'">تنفيذ</button>':'<small>يتطلب المحادثة</small>')+'</div>').join('')+'</div>';
- host.querySelector('#refresh').onclick=()=>open('overview');host.querySelectorAll('[data-run-command]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{const r=await api('runCommand',{name:b.dataset.runCommand});toast(r.message||t('saved'));}catch(e){toast(e.message,true);}finally{b.disabled=false;}});}
- async function users(host){const r=await api('usersList');const rows=r.users||[],canModerate=state.session?.is_owner||state.session?.permissions?.includes('users.moderate'),canErase=state.session?.is_owner||state.session?.permissions?.includes('users.erase');host.innerHTML='<div class="head"><div><h2>'+t('users')+'</h2><p>'+rows.length+' / 100</p></div><input class="input" id="uq" placeholder="'+t('search')+'"></div><div id="utable"></div>';const draw=list=>{document.getElementById('utable').innerHTML=list.length?table([t('name'),t('id'),t('language'),t('lastSeen'),t('actions')],list.map(u=>'<tr><td>'+esc(u.first_name||'—')+'<small>'+esc(u.username?'@'+u.username:'')+'</small></td><td class="ltr">'+esc(u.user_id)+'</td><td>'+esc(u.language||'—')+'</td><td>'+esc(u.last_seen||'—')+'</td><td>'+(canModerate?'<button class="btn '+(u.is_blocked?'':'danger')+'" data-toggle="'+esc(u.user_id)+'" data-blocked="'+(u.is_blocked?'1':'0')+'">'+t(u.is_blocked?'unblock':'block')+'</button>':'')+' '+(canErase?'<button class="btn" data-forget="'+esc(u.user_id)+'">'+t('forget')+'</button>':'')+'</td></tr>')):noData();};draw(rows);host.querySelector('#uq').oninput=e=>{const q=e.target.value.toLowerCase();draw(rows.filter(u=>[u.user_id,u.username,u.first_name].join(' ').toLowerCase().includes(q)));};host.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=async()=>{try{await api(b.dataset.blocked==='1'?'userUnblock':'userBlock',{user_id:b.dataset.toggle});toast(t('saved'));open('users');}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-forget]').forEach(b=>b.onclick=async()=>{if(!confirm(t('confirm')))return;try{await api('userForget',{user_id:b.dataset.forget});toast(t('saved'));open('users');}catch(e){toast(e.message,true);}});}
- async function groups(host){const r=await api('groupsList');const rows=r.groups||[],canManage=state.session?.is_owner||state.session?.permissions?.includes('groups.manage');host.innerHTML='<div class="hero"><h2>إدارة المجموعات وأوامرها</h2><p>تحكم في نمط استجابة كل مجموعة، وفعّل أو عطّل الأوامر بصورة مستقلة لكل مجموعة.</p></div>'+ (rows.length?rows.map(g=>'<div class="panel"><div class="rowcard"><div class="meta"><strong>'+esc(g.title||g.chat_id)+'</strong><small class="ltr">'+esc(g.chat_id)+'</small><small>'+t('status')+': '+t(g.enabled?'enabled':'disabled')+'</small></div><div class="tools"><select class="select" data-mode="'+esc(g.chat_id)+'" '+(canManage?'':'disabled')+'><option value="mention" '+(g.mode==='mention'?'selected':'')+'>'+t('mention')+'</option><option value="all" '+(g.mode==='all'?'selected':'')+'>'+t('all')+'</option></select>'+(canManage?'<button class="btn" data-enable="'+esc(g.chat_id)+'" data-on="'+(g.enabled?'1':'0')+'">'+t(g.enabled?'disabled':'enabled')+'</button>':'')+'</div></div><details data-group-details="'+esc(g.chat_id)+'"><summary>أوامر هذه المجموعة وتفاصيلها</summary><div class="permission-grid" data-group-commands="'+esc(g.chat_id)+'"><p class="muted">افتح القسم لتحميل الأوامر...</p></div></details></div>').join(''):noData());host.querySelectorAll('[data-mode]').forEach(el=>el.onchange=async()=>{try{await api('groupUpdate',{chat_id:el.dataset.mode,mode:el.value});toast(t('saved'));}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-enable]').forEach(b=>b.onclick=async()=>{try{await api('groupUpdate',{chat_id:b.dataset.enable,enabled:b.dataset.on!=='1'});toast(t('saved'));open('groups');}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-group-details]').forEach(details=>details.addEventListener('toggle',async()=>{if(!details.open||details.dataset.loaded)return;const id=details.dataset.groupDetails,box=host.querySelector('[data-group-commands="'+id+'"]');try{const data=await api('groupCommandsGet',{chat_id:id});box.innerHTML=(data.commands||[]).map(c=>'<label class="permission-item"><input type="checkbox" data-group-cmd="'+esc(c.name)+'" '+(c.enabled?'checked':'')+' '+(canManage?'':'disabled')+'> <span><strong>/'+esc(c.name)+'</strong><small class="muted">'+esc(c.description||c.label||'')+'</small></span></label>').join('');box.querySelectorAll('[data-group-cmd]').forEach(input=>input.onchange=async()=>{try{await api('groupCommandSet',{chat_id:id,command_name:input.dataset.groupCmd,enabled:input.checked});toast('تم تحديث أمر المجموعة.');}catch(e){input.checked=!input.checked;toast(e.message,true);}});details.dataset.loaded='1';}catch(e){box.textContent=e.message;}}));}
- async function admins(host){const r=await api('adminsList');const rows=r.admins||[],permissions=r.permission_ids||state.permissionIds||[];const roles=r.roles||state.roles;const labels={ 'dashboard.access':'دخول اللوحة','dashboard.overview':'النظرة العامة','users.read':'عرض المستخدمين','users.moderate':'إشراف المستخدمين','users.erase':'حذف بيانات المستخدم','groups.read':'عرض المجموعات','groups.manage':'إدارة المجموعات','groups.moderate':'إشراف المجموعات','ai.read':'عرض إعدادات البوت','ai.manage':'تخصيص البوت','stats.read':'الإحصائيات','logs.read':'السجلات','backup.create':'إنشاء نسخة احتياطية','backup.restore':'استعادة نسخة','admins.read':'عرض المسؤولين','admins.manage':'إدارة المسؤولين','roles.manage':'إدارة الرتب','translations.manage':'الترجمات','security.manage':'إعدادات الحماية'};host.innerHTML='<div class="panel"><div class="head"><h2>إضافة مسؤول</h2></div><div class="tools"><input class="input ltr" id="newAdmin" placeholder="Telegram ID"><select class="select" id="newRole">'+Object.entries(roles).filter(([k])=>k!=='member'&&k!=='restricted').map(([k,v])=>'<option value="'+esc(k)+'">'+esc(v.label?.ar||k)+'</option>').join('')+'</select><button class="btn primary" id="addAdmin">إضافة</button></div><p class="muted">تُمنح الرتبة الافتراضية أولاً، ويمكنك بعد ذلك تخصيص صلاحيات المسؤول بشكل منفصل.</p></div><div id="alist"></div>';const list=host.querySelector('#alist');list.innerHTML=rows.length?rows.map(a=>{let selected=[];try{const parsed=JSON.parse(a.permissions_json||'{}');const legacyPerms={control:['dashboard.access','dashboard.overview'],users:['users.read','users.moderate'],moderation:['users.moderate','groups.moderate'],ai:['ai.read','ai.manage'],admins:['admins.read','admins.manage','roles.manage'],groups:['groups.read','groups.manage'],stats:['stats.read'],maintenance:['logs.read','backup.create']};selected=Array.isArray(parsed)?parsed:(parsed.all===true?permissions:Object.entries(parsed).filter(([,v])=>v===true).flatMap(([k])=>legacyPerms[k]||[k]));}catch(e){}return '<div class="panel"><div class="rowcard"><div class="meta"><strong class="ltr">'+esc(a.user_id)+'</strong><small>'+esc(a.role)+'</small></div><span class="badge">'+(String(a.user_id)===OWNER?'مالك رئيسي':'مسؤول')+'</span></div>'+(String(a.user_id)===OWNER?'<p class="muted">حساب المالك الرئيسي محمي ولا يمكن تعديل صلاحياته.</p>':'<details><summary>إدارة الرتبة والصلاحيات التفاعلية</summary><div class="tools"><select class="select" data-role-select="'+esc(a.user_id)+'">'+Object.entries(roles).map(([k,v])=>'<option value="'+esc(k)+'" '+(a.role===k?'selected':'')+'>'+esc(v.label?.ar||k)+'</option>').join('')+'</select><button class="btn" data-role-save="'+esc(a.user_id)+'">تغيير الرتبة</button></div><div class="permission-grid" data-perm-grid="'+esc(a.user_id)+'">'+permissions.map(p=>'<label class="permission-item"><input type="checkbox" value="'+esc(p)+'" '+(selected.includes(p)?'checked':'')+'> <span>'+esc(labels[p]||p)+'<small class="muted">'+esc(p)+'</small></span></label>').join('')+'</div><button class="btn primary" data-save-perms="'+esc(a.user_id)+'">حفظ الصلاحيات</button><button class="btn danger" data-remove="'+esc(a.user_id)+'">إزالة المسؤول</button></details>')+'</div>';}).join(''):noData();host.querySelector('#addAdmin').onclick=async()=>{const id=host.querySelector('#newAdmin').value.trim(),role=host.querySelector('#newRole').value;try{await api('adminAdd',{user_id:id,role});toast(t('saved'));open('admins');}catch(e){toast(e.message,true);}};host.querySelectorAll('[data-role-save]').forEach(b=>b.onclick=async()=>{const select=host.querySelector('[data-role-select="'+b.dataset.roleSave+'"]');if(!confirm('سيؤدي تغيير الرتبة إلى استبدال الصلاحيات الحالية بصلاحيات الرتبة الافتراضية. متابعة؟'))return;try{await api('adminRoleSet',{user_id:b.dataset.roleSave,role:select.value});toast('تم تغيير رتبة المسؤول.');open('admins');}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-save-perms]').forEach(b=>b.onclick=async()=>{const grid=host.querySelector('[data-perm-grid="'+b.dataset.savePerms+'"]'),selected=[...grid.querySelectorAll('input:checked')].map(x=>x.value);b.disabled=true;try{await api('adminPermissions',{user_id:b.dataset.savePerms,permissions:selected});toast('تم تحديث صلاحيات المسؤول.');open('admins');}catch(e){toast(e.message,true);}finally{b.disabled=false;}});host.querySelectorAll('[data-remove]').forEach(b=>b.onclick=async()=>{if(!confirm(t('confirm')))return;try{await api('adminRemove',{user_id:b.dataset.remove});toast(t('saved'));open('admins');}catch(e){toast(e.message,true);}});}
- async function memory(host){const r=await api('instructionsList');const rows=r.instructions||[];host.innerHTML='<div class="panel"><div class="field"><label>'+t('newInstruction')+'</label><textarea class="area" id="newInst"></textarea></div><button class="btn primary" id="addInst">'+t('add')+'</button></div><div id="ilist"></div>';document.getElementById('ilist').innerHTML=rows.length?rows.map(x=>'<div class="rowcard"><div class="meta"><strong>#'+x.id+' · '+t(x.active?'enabled':'disabled')+'</strong><small>'+esc(x.instruction)+'</small></div><div class="tools"><button class="btn" data-edit="'+x.id+'">'+t('edit')+'</button><button class="btn danger" data-del="'+x.id+'">'+t('delete')+'</button></div></div>').join(''):noData();document.getElementById('addInst').onclick=async()=>{try{await api('instructionAdd',{instruction:document.getElementById('newInst').value});toast(t('saved'));open('memory');}catch(e){toast(e.message,true);}};host.querySelectorAll('[data-edit]').forEach(b=>b.onclick=async()=>{const old=rows.find(x=>String(x.id)===b.dataset.edit);const value=prompt(t('instruction'),old.instruction);if(value===null)return;try{await api('instructionUpdate',{id:old.id,instruction:value});toast(t('saved'));open('memory');}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{if(!confirm(t('confirm')))return;try{await api('instructionDelete',{id:b.dataset.del});toast(t('saved'));open('memory');}catch(e){toast(e.message,true);}});}
- async function stats(host){const r=await api('statsData'),s=r.stats;host.innerHTML='<div class="metrics">'+[['userCount',s.users],['groupCount',s.groups],['messages',s.messages],['errorCount',s.errors]].map(x=>'<div class="metric"><span>'+t(x[0])+'</span><strong>'+x[1]+'</strong></div>').join('')+'</div><div class="head"><h2>'+t('audit')+'</h2></div>'+((r.audit||[]).length?table(['ID','Action','Actor','Target','Date'],r.audit.map(x=>'<tr><td>'+x.id+'</td><td>'+esc(x.action)+'</td><td>'+esc(x.actor_id)+'</td><td>'+esc(x.target_id||'—')+'</td><td>'+esc(x.created_at)+'</td></tr>')):noData())+'<div class="head"><h2>'+t('errors')+'</h2></div>'+((r.errorRows||[]).length?table(['ID','Type','Message','Date'],r.errorRows.map(x=>'<tr><td>'+x.id+'</td><td>'+esc(x.error_type)+'</td><td>'+esc(x.error_message)+'</td><td>'+esc(x.created_at)+'</td></tr>')):noData());}
- function backup(host){host.innerHTML='<div class="panel"><h2>'+t('export')+'</h2><p class="muted">'+t('restoreNote')+'</p><button class="btn primary" id="export">'+t('export')+'</button></div><div class="panel"><h2>'+t('restore')+'</h2><input class="input" type="file" id="backupFile" accept="application/json,.json"><div class="tools"><button class="btn danger" id="restore">'+t('restore')+'</button></div></div>';document.getElementById('export').onclick=async()=>{try{const r=await api('backupExport');const blob=new Blob([JSON.stringify(r.backup,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='daki-backup-'+new Date().toISOString().slice(0,10)+'.json';a.click();URL.revokeObjectURL(url);toast(t('saved'));}catch(e){toast(e.message,true);}};document.getElementById('restore').onclick=async()=>{const f=document.getElementById('backupFile').files[0];if(!f){toast(t('chooseFile'),true);return;}if(f.size>1500000){toast('ملف النسخة أكبر من الحد المسموح (1.5 MB).',true);return;}if(!confirm(t('confirm')))return;try{const backup=JSON.parse(await f.text());const r=await api('backupRestore',{backup});toast(t('saved')+' '+r.restored); }catch(e){toast(e.message,true);}};}
- async function settings(host){const r=await api('settingsGet'),s=r.settings;const keys=[['bot_enabled','botEnabled'],['maintenance','maintenance'],['alerts_enabled','alerts']];host.innerHTML='<div class="panel">'+keys.map(x=>'<div class="rowcard"><div class="meta"><strong>'+t(x[1])+'</strong><small>'+t('status')+': '+t(s[x[0]]==='1'?'enabled':'disabled')+'</small></div><button class="btn '+(s[x[0]]==='1'?'danger':'primary')+'" data-setting="'+x[0]+'" data-value="'+(s[x[0]]==='1'?'0':'1')+'">'+t(s[x[0]]==='1'?'disabled':'enabled')+'</button></div>').join('')+'</div><div class="head"><div><h2>'+t('commands')+'</h2><p>'+t('commandsDesc')+'</p></div></div><div class="commandgrid">'+state.commands.map(c=>'<div class="command"><b>'+esc((c.labels&&c.labels[state.lang])||c.labels.ar)+'</b><code>/'+esc(c.name)+'</code><small>'+esc(c.description||'')+'</small><small class="muted">'+esc(c.usage||('/'+c.name))+'</small><div class="tools"><span class="badge">'+esc(c.permission||'admin')+'</span><span class="badge '+(c.risk==='high'?'bad':'good')+'">'+(c.risk==='high'?'حساس':'عادي')+'</span></div></div>').join('')+'</div><div class="head"><h2>'+t('custom')+'</h2></div><div class="notice">'+t('draftOnly')+'</div><div class="panel"><div class="tools"><input class="input ltr" id="cname" placeholder="'+t('cmdName')+'"><input class="input" id="cdesc" placeholder="'+t('description')+'"></div><textarea class="area ltr" id="ccode" placeholder="'+t('code')+'"></textarea><button class="btn primary" id="csave">'+t('save')+'</button></div><div id="customList"></div>';host.querySelectorAll('[data-setting]').forEach(b=>b.onclick=async()=>{try{await api('settingsSet',{key:b.dataset.setting,value:b.dataset.value});toast(t('saved'));open('settings');}catch(e){toast(e.message,true);}});document.getElementById('csave').onclick=async()=>{try{await api('saveCommand',{name:document.getElementById('cname').value,description:document.getElementById('cdesc').value,code:document.getElementById('ccode').value});toast(t('saved'));loadCustom();}catch(e){toast(e.message,true);}};loadCustom();}
- async function loadCustom(){try{const r=await api('customList');const host=document.getElementById('customList');if(!host)return;host.innerHTML=(r.commands||[]).length?r.commands.map(c=>'<div class="rowcard"><div class="meta"><strong>/'+esc(c.name)+'</strong><small>'+esc(c.description)+' · '+esc(c.status)+'</small></div><button class="btn danger" data-cdel="'+esc(c.name)+'">'+t('remove')+'</button></div>').join(''):noData();host.querySelectorAll('[data-cdel]').forEach(b=>b.onclick=async()=>{try{await api('deleteCommand',{name:b.dataset.cdel});toast(t('saved'));loadCustom();}catch(e){toast(e.message,true);}});}catch(e){toast(e.message,true);}}
 
- function renderPortal(){const host=document.getElementById('body');const owner=!!state.session?.is_owner;document.getElementById('title').textContent='Daki Admin';document.getElementById('secureLabel').textContent=owner?'المالك الرئيسي':'المسؤول · '+(state.session?.role||'');host.innerHTML='<div class="hero"><h2>مرحباً بك في Daki Admin</h2><p>اختر مساحة العمل المناسبة. تظهر لكل مسؤول الأقسام التي تسمح بها رتبته وصلاحياته فقط.</p></div><div class="portal-grid">'+(owner?'<div class="portal-card"><h2>لوحة المالك</h2><p>إدارة كاملة للبوت والمستخدمين والمجموعات والمسؤولين والرتب والسجلات والإعدادات.</p><button class="btn primary" data-panel="owner">دخول لوحة المالك</button></div>':'')+'<div class="portal-card"><h2>لوحة المسؤولين</h2><p>الأقسام والأوامر المسموح بها وفق الرتبة والصلاحيات التي منحها المالك.</p><button class="btn primary" data-panel="admin">دخول لوحة المسؤولين</button></div></div>';host.querySelectorAll('[data-panel]').forEach(b=>b.onclick=()=>enterPanel(b.dataset.panel));}
- function enterPanel(panel){if(panel==='owner'&&!state.session?.is_owner){toast('هذه المساحة مخصصة للمالك الرئيسي.',true);return;}state.panel=panel;const source=panel==='owner'?NAV_OWNER:NAV_ADMIN;const available=source.filter(x=>state.session?.is_owner||state.session?.permissions?.includes(x[2]));const first=available[0]?.[0]||'role';open(first);}
- function rolePage(host){const s=state.session||{};host.innerHTML='<div class="hero"><h2>رتبتي وصلاحياتي</h2><p>هذه الصلاحيات هي التي يعتمد عليها الخادم عند كل طلب، وليست مجرد عناصر واجهة.</p></div><div class="panel"><div class="rowcard"><div class="meta"><strong>الرتبة الحالية</strong><small>'+esc(s.role||'—')+'</small></div><span class="badge">'+(s.is_owner?'مالك رئيسي':'مسؤول')+'</span></div><div class="head"><h2>الصلاحيات الممنوحة</h2></div><div class="permission-grid">'+(s.permissions||[]).map(p=>'<div class="permission-item"><span class="badge good">مفعّل</span><span>'+esc(p)+'</span></div>').join('')+'</div></div><div class="panel"><h2>ملاحظة</h2><p class="muted">لا يمكنك منح نفسك صلاحيات إضافية أو الوصول إلى أقسام لا تسمح بها رتبتك.</p></div>';}
- async function commandsPage(host){const r=await api('commandsList');state.commands=r.commands||[];host.innerHTML='<div class="hero"><h2>كليشة الأوامر</h2><p>استعرض وصف كل أمر، انسخه أو نفّذه إذا كان متاحاً من التطبيق المصغر.</p></div><div class="commandgrid">'+state.commands.map(c=>'<div class="command"><b>'+esc((c.labels&&c.labels[state.lang])||c.labels?.ar||c.name)+'</b><code>/'+esc(c.name)+'</code><small>'+esc(c.description||'')+'</small><small class="muted">الاستخدام: '+esc(c.usage||('/'+c.name))+'</small><div class="tools"><span class="badge">'+esc(c.permission||'admin')+'</span><span class="badge '+(c.risk==='high'?'bad':'good')+'">'+(c.risk==='high'?'حساس':'عادي')+'</span></div><div class="tools"><button class="btn" data-copy="'+esc('/'+c.name)+'">نسخ</button>'+(c.web_enabled?'<button class="btn primary" data-run="'+esc(c.name)+'">تنفيذ</button>':'<small class="muted">يتطلب المحادثة</small>')+'</div></div>').join('')+'</div>';host.querySelectorAll('[data-copy]').forEach(b=>b.onclick=async()=>{try{await navigator.clipboard.writeText(b.dataset.copy);toast('تم نسخ الأمر.');}catch(e){toast('تعذر النسخ من هذا الجهاز.',true);}});host.querySelectorAll('[data-run]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{const r=await api('runCommand',{name:b.dataset.run});toast(r.message||t('saved'));}catch(e){toast(e.message,true);}finally{b.disabled=false;}});}
- async function botProfile(host){const r=await api('botProfileGet'),p=r.profile||{},canEdit=state.session?.is_owner||state.session?.permissions?.includes('ai.manage');const fields=[['topic','مجال البوت وموضوعاته','مثال: مساعد تعليمي عام، متخصص بالألمانية والتقنية...'],['personality','شخصية البوت','مثال: ودود، احترافي، صبور، دقيق...'],['tone','أسلوب الرد','مثال: رسمي، ودي، مختصر، مفصل...'],['language','لغة الرد','مثال: يجيب بلغة المستخدم، أو العربية افتراضياً...'],['detail','مستوى التفصيل','مثال: إجابات متوسطة مع شرح وأمثلة عند الحاجة...'],['extra_rules','قواعد إضافية','تعليمات خاصة بالبوت العادي فقط...']];host.innerHTML='<div class="hero"><h2>تخصيص شخصية البوت العادي</h2><p>هذه الإعدادات والتعليمات تخص Daki-Schule Bot فقط، ولا تُطبّق على محادثات Telegram Business.</p></div><div class="panel">'+fields.map(f=>'<div class="field"><label>'+f[1]+'</label><textarea class="area" data-profile="'+f[0]+'" placeholder="'+f[2]+'" '+(canEdit?'':'disabled')+'>'+esc(p[f[0]]||'')+'</textarea></div>').join('')+(canEdit?'<button class="btn primary" id="saveProfile">حفظ التخصيصات</button>':'<p class="muted">لديك صلاحية العرض فقط.</p>')+'</div>';const save=host.querySelector('#saveProfile');if(save)save.onclick=async()=>{save.disabled=true;try{for(const el of host.querySelectorAll('[data-profile]'))await api('botProfileSet',{key:el.dataset.profile,value:el.value});toast('تم حفظ تخصيصات البوت العادي.');}catch(e){toast(e.message,true);}finally{save.disabled=false;}};}
- async function botInstructions(host){const r=await api('botInstructionsList'),rows=r.instructions||[],canEdit=state.session?.is_owner||state.session?.permissions?.includes('ai.manage');host.innerHTML='<div class="hero"><h2>تعليمات البوت العادي</h2><p>هذه التعليمات مخزنة بصورة منفصلة عن تعليمات حسابك الشخصي.</p></div>'+(canEdit?'<div class="panel"><div class="field"><label>تعليمة جديدة</label><textarea class="area" id="botInstNew" placeholder="اكتب توجيهاً واضحاً للبوت..."></textarea></div><button class="btn primary" id="botInstAdd">إضافة التعليمة</button></div>':'')+'<div id="botInstList"></div>';const list=host.querySelector('#botInstList');list.innerHTML=rows.length?rows.map(x=>'<div class="rowcard"><div class="meta"><strong>تعليمة #'+x.id+' · '+(x.active?'مفعّلة':'معطّلة')+'</strong><small>'+esc(x.instruction)+'</small></div>'+(canEdit?'<div class="tools"><button class="btn" data-edit="'+x.id+'">تعديل</button><button class="btn danger" data-del="'+x.id+'">تعطيل</button></div>':'')+'</div>').join(''):noData();if(canEdit){host.querySelector('#botInstAdd').onclick=async()=>{try{await api('botInstructionAdd',{instruction:host.querySelector('#botInstNew').value});toast(t('saved'));open('botInstructions');}catch(e){toast(e.message,true);}};host.querySelectorAll('[data-edit]').forEach(b=>b.onclick=async()=>{const item=rows.find(x=>String(x.id)===b.dataset.edit),value=prompt('تعديل التعليمة',item?.instruction||'');if(value===null)return;try{await api('botInstructionUpdate',{id:item.id,instruction:value});toast(t('saved'));open('botInstructions');}catch(e){toast(e.message,true);}});host.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{if(!confirm(t('confirm')))return;try{await api('botInstructionDelete',{id:b.dataset.del});toast(t('saved'));open('botInstructions');}catch(e){toast(e.message,true);}});}}
- async function bootstrap(){try{const r=await api('sessionInfo');state.session=r.session||null;state.roles=r.roles||{};state.permissionIds=r.permission_ids||[];open('portal');}catch(e){document.getElementById('body').innerHTML='<div class="panel error">'+esc(e.message)+'</div>';}}
- document.getElementById('language').onchange=e=>{state.lang=e.target.value;try{localStorage.setItem('daki-admin-language',state.lang);}catch(x){}setLang();open(state.section);};
- setLang();bootstrap();
-})();
-</script></body></html>`;
 
 const TELEGRAM_API = (token, method) => `https://api.telegram.org/bot${token}/${method}`;
 
@@ -296,7 +301,7 @@ function assistantPauseStateKey(msg, actorId, business) {
   // Use one stable key for callback queries and incoming messages. Telegram may
   // omit business_connection_id from callback_query.message, so including it
   // can make the pause write and the later pause check use different keys.
-  return `assistant_pause:${msg.chat.id}:${actorId}`;
+  return `assistant_pause:${business ? "business" : "bot"}:${msg.chat.id}:${actorId}`;
 }
 function isContinueRequest(value) {
   const s = String(value || "").trim().toLowerCase().replace(/[،,؛;.!؟?]+$/g, "").trim();
@@ -430,12 +435,14 @@ function parseAIResponse(result) {
   cleaned = cleaned.replace(/^\s*["']?reply["']?\s*:\s*/i, "").trim();
   return { reply: cleaned.slice(0, 18000), need_human: false };
 }
-async function runAIWithRetry(env, messages) {
+async function runAIWithRetry(env, messages, temperature = undefined) {
   const attempts = 3;
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const result = await env.AI.run(MODEL, { messages, max_tokens: 2048 });
+      const options = { messages, max_tokens: 2048 };
+      if (Number.isFinite(temperature)) options.temperature = Math.max(0, Math.min(2, temperature));
+      const result = await env.AI.run(MODEL, options);
       return parseAIResponse(result);
     } catch (error) {
       lastError = error;
@@ -514,6 +521,65 @@ async function validateWebAppInitData(initData, botToken) {
   if (!user?.id) return null;
   return { user, authDate };
 }
+const BACKUP_SCHEMA_VERSION = 1;
+async function createBackupSnapshot(env, tables, limit = 5000) {
+  const snapshot = { app: "DAKI", schema_version: BACKUP_SCHEMA_VERSION, version: VERSION,
+    created_at: new Date().toISOString(), row_counts: {}, truncated_tables: [], tables: {} };
+  for (const table of tables) {
+    const result = await env.DB.prepare(`SELECT * FROM ${table} LIMIT ?`).bind(limit + 1).all();
+    const rows = result.results || [];
+    snapshot.tables[table] = rows.slice(0, limit);
+    snapshot.row_counts[table] = Math.min(rows.length, limit);
+    if (rows.length > limit) snapshot.truncated_tables.push(table);
+  }
+  return snapshot;
+}
+function validateBackupSnapshot(backup, allowedTables) {
+  if (!backup || backup.app !== "DAKI" || backup.schema_version !== BACKUP_SCHEMA_VERSION ||
+      !backup.tables || typeof backup.tables !== "object" || Array.isArray(backup.tables) ||
+      !backup.row_counts || typeof backup.row_counts !== "object" || Array.isArray(backup.row_counts) ||
+      !Array.isArray(backup.truncated_tables)) {
+    throw new Error("صيغة النسخة أو إصدار مخططها غير مدعوم؛ لم يتم تغيير قاعدة البيانات.");
+  }
+  if (backup.truncated_tables.length) {
+    throw new Error(`النسخة غير مكتملة والجداول التالية تجاوزت الحد: ${backup.truncated_tables.join(", ")}. أنشئ نسخة كاملة قبل الاستعادة.`);
+  }
+  const allowed = new Set(allowedTables);
+  for (const table of Object.keys(backup.tables)) {
+    if (!allowed.has(table)) throw new Error(`النسخة تحتوي على جدول غير مسموح: ${table}.`);
+  }
+  let total = 0;
+  for (const table of allowedTables) {
+    const rows = backup.tables[table];
+    if (rows === undefined) {
+      if (Object.hasOwn(backup.row_counts, table)) throw new Error(`عداد جدول ${table} لا يطابق محتوى النسخة.`);
+      continue;
+    }
+    if (!Array.isArray(rows) || rows.length > 5000) throw new Error(`بيانات جدول ${table} غير صالحة أو تتجاوز 5000 سجل.`);
+    if (!Number.isInteger(backup.row_counts[table]) || backup.row_counts[table] !== rows.length) {
+      throw new Error(`عداد سجلات جدول ${table} لا يطابق محتوى النسخة.`);
+    }
+    total += rows.length;
+    if (total > 100000) throw new Error("حجم النسخة يتجاوز الحد الآمن للاستعادة (100000 سجل).");
+    for (const row of rows) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) throw new Error(`يوجد سجل غير صالح في جدول ${table}.`);
+      for (const [key, value] of Object.entries(row)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) ||
+            value !== null && !["string", "number"].includes(typeof value) ||
+            typeof value === "number" && !Number.isFinite(value)) {
+          throw new Error(`قيمة أو عمود غير صالح في جدول ${table}.`);
+        }
+      }
+    }
+  }
+  for (const table of Object.keys(backup.row_counts)) {
+    if (!allowed.has(table) || !Object.hasOwn(backup.tables, table)) {
+      throw new Error(`بيانات عداد النسخة غير متطابقة عند جدول ${table}.`);
+    }
+  }
+  return true;
+}
+
 const COMMAND_SYSTEM = createCommandSystem({
   VERSION, OWNER_ID, ADMIN_URL, replyOptions, isOwner, hasPermission, sendMessage, isPrivate,
   getSetting, setSetting, audit, tg, sendBackup, logError
@@ -529,7 +595,13 @@ const ADMIN_API_PERMISSION = Object.freeze({
   botProfileGet: "ai.read", botProfileSet: "ai.manage", botInstructionsList: "ai.read", botInstructionAdd: "ai.manage", botInstructionUpdate: "ai.manage", botInstructionDelete: "ai.manage",
   settingsGet: "security.manage", settingsSet: "security.manage",
   statsData: "stats.read", auditList: "logs.read", errorsList: "logs.read", backupExport: "backup.create", backupRestore: "backup.restore",
-  customList: "ai.read", saveCommand: "ai.manage", deleteCommand: "ai.manage", runCommand: "dashboard.access"
+  customList: "ai.read", saveCommand: "commands.manage", deleteCommand: "commands.manage", runCommand: "dashboard.access",
+  systemConfigGet: "ai.read", systemConfigSet: "ai.read",
+  systemInstructionsList: "ai.read", systemInstructionAdd: "instructions.manage", systemInstructionUpdate: "instructions.manage", systemInstructionDelete: "instructions.manage",
+  systemUsersList: "users.read", systemUserForget: "users.erase", systemUserBlock: "users.moderate", systemUserUnblock: "users.moderate",
+  systemGroupsList: "groups.read", systemGroupSet: "groups.manage", systemGroupModerate: "dashboard.access",
+  systemRulesList: "security.manage", systemRuleAdd: "commands.manage", systemRuleDelete: "commands.manage",
+  systemBroadcastStart: "broadcast.send", systemBroadcastBatch: "broadcast.send", systemBroadcastStatus: "broadcast.send", systemBroadcastCancel: "broadcast.send"
 });
 async function adminVisibleCommands(env, actorId) {
   const primaryOwner = await isOwner(env, actorId);
@@ -543,6 +615,13 @@ async function adminVisibleCommands(env, actorId) {
   }
   return visible;
 }
+async function getBroadcastStatus(env, jobId, scope) {
+  const job = await env.DB.prepare("SELECT id,system_scope,status,total,sent,failed,created_at,updated_at FROM system_broadcast_jobs WHERE id=? AND system_scope=?").bind(jobId,scope).first();
+  if (!job) return json({ok:false,error:"Broadcast job not found"},404);
+  const pending = await env.DB.prepare("SELECT COUNT(*) AS n FROM system_broadcast_recipients WHERE job_id=? AND status IN ('pending','sending')").bind(jobId).first();
+  return json({ok:true,job:{...job,remaining:Number(pending?.n || 0)}});
+}
+
 async function handleAdminApi(request, env) {
   let body;
   try { body = await request.json(); } catch (_) { return json({ ok: false, error: "Invalid JSON" }, 400); }
@@ -550,7 +629,10 @@ async function handleAdminApi(request, env) {
   if (!verified) return json({ ok: false, error: "تعذر التحقق من جلسة Telegram. أعد فتح اللوحة من Telegram." }, 401);
   const actorId = String(verified.user.id);
   const action = String(body?.action || "");
-  const requiredPermission = ADMIN_API_PERMISSION[action] || "dashboard.access";
+  // Fail closed: an unregistered API action must never inherit dashboard.access.
+  // This prevents a future endpoint from accidentally becoming available to every admin.
+  const requiredPermission = ADMIN_API_PERMISSION[action];
+  if (!requiredPermission) return json({ ok: false, error: "Unknown admin action" }, 400);
   if (!(await hasPermission(env, actorId, requiredPermission))) return json({ ok: false, error: "ليس لديك الإذن اللازم لتنفيذ هذه العملية." }, 403);
   if (action === "runCommand") {
     const name = String(body?.name || "").toLowerCase();
@@ -560,28 +642,284 @@ async function handleAdminApi(request, env) {
     if (!handled) return json({ ok: false, error: "لا يوجد معالج لهذا الأمر." }, 400);
     return json({ ok: true, message: "تم تنفيذ الأمر. راجع محادثتك مع DAKI." });
   }
+  const validScope = value => value === "business" || value === "bot";
+  const scope = validScope(body.system_scope) ? body.system_scope : "";
+  if ((action.startsWith("system") || ["groupCommandsGet","groupCommandSet"].includes(action)) && !scope) return json({ ok: false, error: "system_scope must be business or bot" }, 400);
+  const configKeys = new Set([
+    "private_auto_reply","group_auto_reply","handoff_enabled","handoff_pause_hours","tone","reply_length","typing_delay",
+    "stop_on_manual_reply","working_hours","schedule_start","schedule_end","away_message","bot_name","thinking_style",
+    "temperature","auto_read_messages","reply_to_voice_notes","ignore_bots_channels","auto_archive_muted","rate_limit_per_user","schedule_timezone",
+    "block_links","ignore_stickers","system_prompt","personality","language","detail","topic","extra_rules","maintenance"
+  ]);
+  if (action === "systemConfigGet") {
+    const rows = await env.DB.prepare("SELECT config_key,config_value FROM system_config WHERE system_scope=?").bind(scope).all();
+    const config = Object.fromEntries((rows.results || []).map(row => [row.config_key, row.config_value]));
+    if (scope === "business") config.enabled = await getSetting(env, "business_enabled", "1");
+    else { config.enabled = await getSetting(env, "bot_enabled", "1"); config.maintenance = await getSetting(env, "maintenance", "0"); }
+    return json({ ok: true, system_scope: scope, config });
+  }
+  if (action === "systemConfigSet") {
+    const key = safeString(body.key || "", 80);
+    const configPermission = ["enabled", "maintenance"].includes(key)
+      ? "ai.toggle"
+      : ["system_prompt", "extra_rules"].includes(key) ? "instructions.manage" : "ai.manage";
+    if (!(await hasPermission(env, actorId, configPermission))) return json({ ok: false, error: "ليس لديك الإذن اللازم لتعديل هذا الإعداد." }, 403);
+    if (key === "enabled") {
+      if (typeof body.value !== "boolean") return json({ ok: false, error: "enabled must be boolean" }, 400);
+      await setSetting(env, scope === "business" ? "business_enabled" : "bot_enabled", body.value ? "1" : "0", actorId);
+    } else if (key === "maintenance" && scope === "bot") {
+      if (typeof body.value !== "boolean") return json({ ok: false, error: "maintenance must be boolean" }, 400);
+      await setSetting(env, "maintenance", body.value ? "1" : "0", actorId);
+    } else {
+      if (!configKeys.has(key)) return json({ ok: false, error: "Unsupported configuration key" }, 400);
+      let value = typeof body.value === "boolean" ? (body.value ? "1" : "0") : safeString(body.value ?? "", key === "system_prompt" || key === "extra_rules" ? 10000 : 1000).trim();
+      if (["schedule_start","schedule_end"].includes(key) && value && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) return json({ ok:false,error:"استخدم صيغة الوقت HH:MM أو اترك الحقل فارغاً لتعطيل الجدول" },400);
+      if (key === "schedule_timezone") { value = value || "UTC"; try { new Intl.DateTimeFormat("en-US", { timeZone:value }).format(); } catch (_) { return json({ok:false,error:"منطقة زمنية غير صالحة"},400); } }
+      if (key === "handoff_pause_hours" && !value) value = "10";
+      if (key === "typing_delay" && (!Number.isFinite(Number(value)) || Number(value)<0 || Number(value)>8)) return json({ok:false,error:"تأخير الكتابة يجب أن يكون بين 0 و8 ثوانٍ"},400);
+      if (key === "handoff_pause_hours" && (!Number.isFinite(Number(value)) || Number(value)<1 || Number(value)>72)) return json({ok:false,error:"مدة التوقف يجب أن تكون بين 1 و72 ساعة"},400);
+      if (key === "rate_limit_per_user" && (!Number.isInteger(Number(value)) || Number(value)<0 || Number(value)>1000)) return json({ok:false,error:"الحد يجب أن يكون عدداً صحيحاً بين 0 و1000"},400);
+      if (key === "temperature" && (!Number.isFinite(Number(value)) || Number(value)<0 || Number(value)>2)) return json({ok:false,error:"درجة الإبداع يجب أن تكون بين 0 و2"},400);
+      await env.DB.prepare(`INSERT INTO system_config(system_scope,config_key,config_value,updated_by) VALUES(?,?,?,?)
+        ON CONFLICT(system_scope,config_key) DO UPDATE SET config_value=excluded.config_value,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`)
+        .bind(scope,key,value,actorId).run();
+    }
+    await audit(env, actorId, "system_config_set", scope, key, safeString(String(body.value), 500));
+    return json({ ok: true });
+  }
+  if (action === "systemInstructionsList") {
+    const rows = await env.DB.prepare("SELECT id,instruction,active,created_at,updated_at FROM system_instructions WHERE system_scope=? ORDER BY id DESC LIMIT 100").bind(scope).all();
+    return json({ ok: true, instructions: rows.results || [] });
+  }
+  if (action === "systemInstructionAdd" || action === "systemInstructionUpdate" || action === "systemInstructionDelete") {
+    const id = Number(body.id || 0), instruction = safeString(body.instruction || "", 4000).trim();
+    if (action === "systemInstructionAdd") {
+      if (!instruction) return json({ ok: false, error: "Instruction is required" }, 400);
+      await env.DB.prepare("INSERT INTO system_instructions(system_scope,instruction,created_by) VALUES(?,?,?)").bind(scope,instruction,actorId).run();
+    } else {
+      if (!Number.isInteger(id) || id < 1) return json({ ok: false, error: "Invalid instruction id" }, 400);
+      if (action === "systemInstructionUpdate") {
+        if (!instruction) return json({ ok: false, error: "Instruction is required" }, 400);
+        await env.DB.prepare("UPDATE system_instructions SET instruction=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND system_scope=?").bind(instruction,id,scope).run();
+      } else await env.DB.prepare("DELETE FROM system_instructions WHERE id=? AND system_scope=?").bind(id,scope).run();
+    }
+    await audit(env,actorId,action,scope,String(id || "new"));
+    return json({ ok: true });
+  }
+  if (action === "systemUsersList") {
+    const rows = await env.DB.prepare(`SELECT u.user_id,u.username,u.first_name,u.language,u.last_seen,
+      CASE WHEN b.user_id IS NULL THEN 0 ELSE 1 END AS is_blocked
+      FROM system_users u LEFT JOIN system_bans b ON b.system_scope=u.system_scope AND b.user_id=u.user_id
+      WHERE u.system_scope=? ORDER BY u.last_seen DESC LIMIT 300`).bind(scope).all();
+    return json({ ok: true, users: rows.results || [] });
+  }
+  if (action === "systemUserForget") {
+    const id = String(body.user_id || "");
+    if (!/^\d+$/.test(id) || id === OWNER_ID) return json({ ok:false,error:"Invalid or protected user id" },400);
+    const prefix = scope === "business" ? "business:%" : "chat:%";
+    const conversations = await env.DB.prepare("SELECT id FROM conversations WHERE user_id=? AND conversation_key LIKE ?").bind(id,prefix).all();
+    for (const conversation of conversations.results || []) await env.DB.prepare("DELETE FROM messages WHERE conversation_id=?").bind(conversation.id).run();
+    await env.DB.prepare("DELETE FROM conversations WHERE user_id=? AND conversation_key LIKE ?").bind(id,prefix).run();
+    await env.DB.prepare("DELETE FROM system_learning_profiles WHERE system_scope=? AND user_id=?").bind(scope,id).run();
+    await env.DB.prepare("DELETE FROM system_usage_stats WHERE system_scope=? AND user_id=?").bind(scope,id).run();
+    await env.DB.prepare("DELETE FROM system_rate_limits WHERE system_scope=? AND user_id=?").bind(scope,id).run();
+    await env.DB.prepare("DELETE FROM system_mutes WHERE system_scope=? AND user_id=?").bind(scope,id).run();
+    await env.DB.prepare("DELETE FROM system_warnings WHERE system_scope=? AND user_id=?").bind(scope,id).run();
+    if (scope === "bot") await env.DB.prepare("DELETE FROM welcome_events WHERE user_id=? AND connection_id='|welcome-bot-admin-v1'").bind(id).run();
+    else await env.DB.prepare("DELETE FROM welcome_events WHERE user_id=? AND connection_id!='|welcome-bot-admin-v1'").bind(id).run();
+    // Remove only this runtime's transient pause/handoff/continuation state.
+    if (scope === "bot") {
+      for (const prefix of ["handoff:bot:%:","continuation:bot:%:","assistant_pause:bot:%:"]) {
+        await env.DB.prepare("DELETE FROM daki_state WHERE state_key LIKE ?").bind(prefix + id).run();
+      }
+    } else {
+      for (const prefix of ["handoff:%:","continuation:%:","assistant_pause:business:%:"]) {
+        const pattern = prefix + id;
+        if (prefix.startsWith("assistant_pause:")) await env.DB.prepare("DELETE FROM daki_state WHERE state_key LIKE ?").bind(pattern).run();
+        else await env.DB.prepare("DELETE FROM daki_state WHERE state_key LIKE ? AND state_key NOT LIKE ?").bind(pattern, prefix.replace(":%:", ":bot:%:") + id).run();
+      }
+    }
+    await env.DB.prepare("DELETE FROM system_users WHERE system_scope=? AND user_id=?").bind(scope,id).run();
+    await audit(env,actorId,"system_user_forget",scope,id);
+    return json({ ok:true, deleted_conversations:(conversations.results||[]).length });
+  }
+  if (action === "systemUserBlock" || action === "systemUserUnblock") {
+    const id = String(body.user_id || "");
+    if (!/^\d+$/.test(id) || id === OWNER_ID) return json({ ok: false, error: "Invalid or protected user id" }, 400);
+    if (action === "systemUserBlock") await env.DB.prepare("INSERT INTO system_bans(system_scope,user_id,reason,blocked_by) VALUES(?,?,?,?) ON CONFLICT(system_scope,user_id) DO UPDATE SET reason=excluded.reason,blocked_by=excluded.blocked_by,created_at=CURRENT_TIMESTAMP").bind(scope,id,safeString(body.reason || "Admin dashboard",500),actorId).run();
+    else await env.DB.prepare("DELETE FROM system_bans WHERE system_scope=? AND user_id=?").bind(scope,id).run();
+    await audit(env,actorId,action,scope,id);
+    return json({ ok: true });
+  }
+  if (action === "systemGroupsList") {
+    const rows = await env.DB.prepare("SELECT chat_id,title,enabled,mode FROM system_groups WHERE system_scope=? ORDER BY title LIMIT 300").bind(scope).all();
+    return json({ ok: true, groups: rows.results || [] });
+  }
+  if (action === "systemGroupSet") {
+    const id = String(body.chat_id || "");
+    if (!/^-\d+$/.test(id)) return json({ ok: false, error: "Invalid group id" }, 400);
+    const enabled = typeof body.enabled === "boolean" ? (body.enabled ? 1 : 0) : null;
+    const mode = ["all","mention"].includes(body.mode) ? body.mode : null;
+    await env.DB.prepare(`INSERT INTO system_groups(system_scope,chat_id,title,enabled,mode) VALUES(?,?,?,?,?)
+      ON CONFLICT(system_scope,chat_id) DO UPDATE SET enabled=COALESCE(?,enabled),mode=COALESCE(?,mode),updated_at=CURRENT_TIMESTAMP`)
+      .bind(scope,id,safeString(body.title || "",200),enabled ?? 1,mode || "mention",enabled,mode).run();
+    await audit(env,actorId,"system_group_set",scope,id);
+    return json({ ok: true });
+  }
+  if (action === "systemGroupModerate") {
+    if (scope !== "bot") return json({ ok:false, error:"Group moderation is available only for Telegram Bot groups" },400);
+    const input = validateGroupModerationInput({ ...body, ownerId: OWNER_ID });
+    if (!input.ok) return json({ ok:false, error:input.error },400);
+    const required = GROUP_MODERATION_ACTIONS[input.action].permission;
+    if (!(await hasPermission(env, actorId, required))) return json({ ok:false,error:"ليس لديك الإذن اللازم لهذا الإجراء." },403);
+    try {
+      if (input.action === "kick") {
+        await tg(env,"banChatMember",{chat_id:input.chatId,user_id:Number(input.userId)});
+        await tg(env,"unbanChatMember",{chat_id:input.chatId,user_id:Number(input.userId),only_if_banned:true});
+      } else if (input.action === "ban") {
+        await tg(env,"banChatMember",{chat_id:input.chatId,user_id:Number(input.userId)});
+        await env.DB.prepare(`INSERT INTO system_group_bans(system_scope,chat_id,user_id,reason,banned_by) VALUES('bot',?,?,?,?)
+          ON CONFLICT(system_scope,chat_id,user_id) DO UPDATE SET reason=excluded.reason,banned_by=excluded.banned_by,created_at=CURRENT_TIMESTAMP`)
+          .bind(input.chatId,input.userId,safeString(body.reason || "Admin dashboard",500),actorId).run();
+      } else if (input.action === "unban") {
+        await tg(env,"unbanChatMember",{chat_id:input.chatId,user_id:Number(input.userId),only_if_banned:true});
+        await env.DB.prepare("DELETE FROM system_group_bans WHERE system_scope='bot' AND chat_id=? AND user_id=?").bind(input.chatId,input.userId).run();
+      } else if (input.action === "mute") {
+        const until = nowTs() + input.duration;
+        await tg(env,"restrictChatMember",{chat_id:input.chatId,user_id:Number(input.userId),permissions:{can_send_messages:false,can_send_audios:false,can_send_documents:false,can_send_photos:false,can_send_videos:false,can_send_video_notes:false,can_send_voice_notes:false,can_send_polls:false,can_send_other_messages:false,can_add_web_page_previews:false},until_date:until});
+        await env.DB.prepare(`INSERT INTO system_mutes(system_scope,user_id,chat_id,until_ts,reason,muted_by) VALUES('bot',?,?,?,?,?)
+          ON CONFLICT(system_scope,user_id,chat_id) DO UPDATE SET until_ts=excluded.until_ts,reason=excluded.reason,muted_by=excluded.muted_by`)
+          .bind(input.userId,input.chatId,until,safeString(body.reason || "Admin dashboard",500),actorId).run();
+      } else if (input.action === "unmute") {
+        const chat = await tg(env,"getChat",{chat_id:input.chatId});
+        const defaults = chat?.permissions || {can_send_messages:true};
+        await tg(env,"restrictChatMember",{chat_id:input.chatId,user_id:Number(input.userId),permissions:defaults});
+        await env.DB.prepare("DELETE FROM system_mutes WHERE system_scope='bot' AND user_id=? AND chat_id=?").bind(input.userId,input.chatId).run();
+      } else if (input.action === "delete_message") {
+        await tg(env,"deleteMessage",{chat_id:input.chatId,message_id:input.messageId});
+      }
+      await audit(env,actorId,"group_moderation",input.chatId,`${input.action}:${input.userId || input.messageId}`);
+      return json({ok:true,action:input.action});
+    } catch (error) {
+      await audit(env,actorId,"group_moderation_failed",input.chatId,`${input.action}:${safeString(error.message,300)}`);
+      return json({ok:false,error:`تعذر تنفيذ الإجراء في Telegram: ${safeString(error.message,300)}`},502);
+    }
+  }
+  if (action === "systemBroadcastStart") {
+    const rawMessage = String(body.message || "");
+    if (rawMessage.length > 4096) return json({ok:false,error:"رسالة Telegram لا يمكن أن تتجاوز 4096 حرفاً."},400);
+    const message = safeString(rawMessage, 4096).trim();
+    if (!message) return json({ok:false,error:"اكتب نص الرسالة أولاً."},400);
+    const jobId = crypto.randomUUID();
+    await env.DB.prepare("INSERT INTO system_broadcast_jobs(id,system_scope,message_text,created_by,status) VALUES(?,?,?,?,'preparing')")
+      .bind(jobId,scope,message,actorId).run();
+    // Snapshot only real private conversations belonging to the selected runtime.
+    // Business recipients retain their own business_connection_id for sendMessage.
+    if (scope === "business") {
+      await env.DB.prepare(`INSERT OR IGNORE INTO system_broadcast_recipients(job_id,chat_id,connection_id)
+        SELECT ?, c.chat_id, c.business_connection_id FROM conversations c
+        INNER JOIN system_users u ON u.system_scope='business' AND u.user_id=CAST(c.user_id AS TEXT)
+        LEFT JOIN system_bans b ON b.system_scope='business' AND b.user_id=u.user_id
+        WHERE c.chat_type='private' AND c.business_connection_id IS NOT NULL
+          AND c.conversation_key LIKE 'business:%' AND b.user_id IS NULL AND u.user_id<>?`)
+        .bind(jobId,OWNER_ID).run();
+    } else {
+      await env.DB.prepare(`INSERT OR IGNORE INTO system_broadcast_recipients(job_id,chat_id,connection_id)
+        SELECT ?, c.chat_id, '' FROM conversations c
+        INNER JOIN system_users u ON u.system_scope='bot' AND u.user_id=CAST(c.chat_id AS TEXT)
+        LEFT JOIN system_bans b ON b.system_scope='bot' AND b.user_id=u.user_id
+        WHERE c.chat_type='private' AND c.business_connection_id IS NULL
+          AND c.conversation_key LIKE 'chat:%' AND b.user_id IS NULL AND CAST(c.chat_id AS TEXT)<>?`)
+        .bind(jobId,OWNER_ID).run();
+    }
+    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM system_broadcast_recipients WHERE job_id=?").bind(jobId).first();
+    const total = Number(count?.n || 0);
+    await env.DB.prepare("UPDATE system_broadcast_jobs SET total=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?")
+      .bind(total,total ? "running" : "completed",jobId).run();
+    await audit(env,actorId,"system_broadcast_start",jobId,`scope=${scope}; recipients=${total}`);
+    return json({ok:true,job_id:jobId,total,status:total ? "running" : "completed",system_scope:scope});
+  }
+  if (action === "systemBroadcastBatch") {
+    const jobId = String(body.job_id || "");
+    if (!/^[0-9a-f-]{36}$/i.test(jobId)) return json({ok:false,error:"Invalid broadcast job"},400);
+    const job = await env.DB.prepare("SELECT id,status,system_scope FROM system_broadcast_jobs WHERE id=? AND system_scope=?").bind(jobId,scope).first();
+    if (!job) return json({ok:false,error:"Broadcast job not found"},404);
+    if (job.status === "cancelled" || job.status === "completed") return getBroadcastStatus(env,jobId,scope);
+    const jobMessage = await env.DB.prepare("SELECT message_text FROM system_broadcast_jobs WHERE id=? AND system_scope=?").bind(jobId,scope).first();
+    const pending = await env.DB.prepare("SELECT chat_id,connection_id FROM system_broadcast_recipients WHERE job_id=? AND status='pending' ORDER BY chat_id LIMIT 10").bind(jobId).all();
+    for (const recipient of (pending.results || [])) {
+      const claim = await env.DB.prepare("UPDATE system_broadcast_recipients SET status='sending',updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND chat_id=? AND connection_id=? AND status='pending'").bind(jobId,recipient.chat_id,recipient.connection_id).run();
+      if (!(claim.meta?.changes > 0)) continue;
+      try {
+        const options = recipient.connection_id ? {business_connection_id:recipient.connection_id} : {};
+        await sendMessage(env,recipient.chat_id,jobMessage?.message_text || "",options);
+        await env.DB.prepare("UPDATE system_broadcast_recipients SET status='sent',error_text='',updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND chat_id=? AND connection_id=? AND status='sending'").bind(jobId,recipient.chat_id,recipient.connection_id).run();
+        await env.DB.prepare("UPDATE system_broadcast_jobs SET sent=sent+1,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(jobId).run();
+      } catch (sendError) {
+        await env.DB.prepare("UPDATE system_broadcast_recipients SET status='failed',error_text=?,updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND chat_id=? AND connection_id=? AND status='sending'").bind(safeString(sendError?.message || sendError,500),jobId,recipient.chat_id,recipient.connection_id).run();
+        await env.DB.prepare("UPDATE system_broadcast_jobs SET failed=failed+1,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(jobId).run();
+      }
+      await new Promise(resolve => setTimeout(resolve, 40));
+    }
+    const remaining = await env.DB.prepare("SELECT COUNT(*) AS n FROM system_broadcast_recipients WHERE job_id=? AND status IN ('pending','sending')").bind(jobId).first();
+    if (Number(remaining?.n || 0) === 0) await env.DB.prepare("UPDATE system_broadcast_jobs SET status='completed',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'").bind(jobId).run();
+    return getBroadcastStatus(env,jobId,scope);
+  }
+  if (action === "systemBroadcastStatus") {
+    const jobId = String(body.job_id || "");
+    if (!/^[0-9a-f-]{36}$/i.test(jobId)) return json({ok:false,error:"Invalid broadcast job"},400);
+    return getBroadcastStatus(env,jobId,scope);
+  }
+  if (action === "systemBroadcastCancel") {
+    const jobId = String(body.job_id || "");
+    if (!/^[0-9a-f-]{36}$/i.test(jobId)) return json({ok:false,error:"Invalid broadcast job"},400);
+    const job = await env.DB.prepare("SELECT id,status FROM system_broadcast_jobs WHERE id=? AND system_scope=?").bind(jobId,scope).first();
+    if (!job) return json({ok:false,error:"Broadcast job not found"},404);
+    await env.DB.prepare("UPDATE system_broadcast_jobs SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'").bind(jobId).run();
+    await audit(env,actorId,"system_broadcast_cancel",jobId,`scope=${scope}`);
+    return getBroadcastStatus(env,jobId,scope);
+  }
+  if (action === "systemRulesList") {
+    const rows = await env.DB.prepare("SELECT id,rule_type,rule_value,enabled FROM system_rules WHERE system_scope=? ORDER BY id DESC LIMIT 300").bind(scope).all();
+    return json({ ok: true, rules: rows.results || [] });
+  }
+  if (action === "systemRuleAdd") {
+    const type = ["banned_word","blocked_link","keyword"].includes(body.rule_type) ? body.rule_type : "";
+    const value = safeString(body.rule_value || "",300).trim();
+    if (!type || !value) return json({ ok: false, error: "Invalid rule" }, 400);
+    await env.DB.prepare("INSERT OR IGNORE INTO system_rules(system_scope,rule_type,rule_value,created_by) VALUES(?,?,?,?)").bind(scope,type,value,actorId).run();
+    await audit(env,actorId,"system_rule_add",scope,`${type}:${value}`);
+    return json({ ok: true });
+  }
+  if (action === "systemRuleDelete") {
+    const id = Number(body.id || 0);
+    if (!Number.isInteger(id) || id < 1) return json({ ok: false, error: "Invalid rule id" }, 400);
+    await env.DB.prepare("DELETE FROM system_rules WHERE id=? AND system_scope=?").bind(id,scope).run();
+    await audit(env,actorId,"system_rule_delete",scope,String(id));
+    return json({ ok: true });
+  }
   const backupTables = ["users","conversations","messages","learning_profiles","recurring_mistakes",
     "admins","admin_custom_commands","blocked_users","warnings","groups","bot_settings","instructions",
-    "audit_logs","alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state","bot_profile_settings","bot_instructions","group_command_settings"];
+    "audit_logs","alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state","bot_profile_settings","bot_instructions","group_command_settings","system_config","system_instructions","system_bans","system_users","system_groups","system_rules","system_rate_limits","system_mutes","system_usage_stats","system_learning_profiles","system_warnings","system_group_command_settings","system_group_bans","system_broadcast_jobs","system_broadcast_recipients"];
   try {
     if (action === "sessionInfo") {
       const primaryOwner = await isOwner(env, actorId);
       const admin = primaryOwner ? { role: "primary_owner", permissions_json: '{"all":true}' } : await getAdmin(env, actorId);
       const permissions = primaryOwner ? RBAC_PERMISSION_IDS : effectiveAdminPermissions(admin);
-      return json({ ok: true, session: { user_id: actorId, is_owner: primaryOwner, role: primaryOwner ? "primary_owner" : (admin?.role || "member"), permissions }, roles: RBAC_ROLES, permission_ids: RBAC_PERMISSION_IDS });
+      return json({ ok: true, session: { user_id: actorId, is_owner: primaryOwner, role: primaryOwner ? "primary_owner" : (admin?.role || "member"), permissions }, roles: RBAC_ASSIGNABLE_ROLES, permission_ids: RBAC_PERMISSION_IDS });
     }
     if (action === "commandsList") {
       return json({ ok: true, commands: await adminVisibleCommands(env, actorId) });
     }
     if (action === "overview") {
       const count = async sql => { try { const row = await env.DB.prepare(sql).first(); return Number(row?.n || 0); } catch (_) { return 0; } };
-      const [users, groups, admins, errors, enabled, maintenance] = await Promise.all([
+      const [users, groups, admins, errors, enabled, businessEnabled, maintenance] = await Promise.all([
         count("SELECT COUNT(*) n FROM users"), count("SELECT COUNT(*) n FROM groups"),
         count("SELECT COUNT(*) n FROM admins"), count("SELECT COUNT(*) n FROM error_logs"),
-        getSetting(env, "bot_enabled", "1"), getSetting(env, "maintenance", "0")
+        getSetting(env, "bot_enabled", "1"), getSetting(env, "business_enabled", "1"), getSetting(env, "maintenance", "0")
       ]);
       return json({ ok: true, overview: { users, groups, admins: admins + 1, errors,
-        bot_enabled: enabled === "1", maintenance: maintenance === "1", db: true,
+        bot_enabled: enabled === "1", business_enabled: businessEnabled === "1", maintenance: maintenance === "1", db: true,
         ai: !!env.AI?.run, token: !!env.TELEGRAM_BOT_TOKEN, version: VERSION }, commands: await adminVisibleCommands(env, actorId) });
     }
     if (action === "usersList") {
@@ -621,18 +959,18 @@ async function handleAdminApi(request, env) {
     if (action === "groupCommandsGet") {
       const id = String(body.chat_id || "").trim();
       if (!/^-\d+$/.test(id)) return json({ ok: false, error: "معرّف المجموعة غير صالح." }, 400);
-      const group = await env.DB.prepare("SELECT chat_id FROM groups WHERE chat_id=?").bind(id).first();
+      const group = await env.DB.prepare("SELECT chat_id FROM system_groups WHERE system_scope=? AND chat_id=?").bind(scope,id).first();
       if (!group) return json({ ok: false, error: "المجموعة غير مسجلة." }, 404);
-      const rows = await env.DB.prepare("SELECT command_name,enabled FROM group_command_settings WHERE chat_id=?").bind(id).all();
+      const rows = await env.DB.prepare("SELECT command_name,enabled FROM system_group_command_settings WHERE system_scope=? AND chat_id=?").bind(scope,id).all();
       const disabled = new Set((rows.results || []).filter(row => Number(row.enabled) === 0).map(row => row.command_name));
       return json({ ok: true, commands: ADMIN_COMMANDS.filter(command => !command.ownerOnly).map(command => ({ name: command.name, label: command.labels?.ar || command.name, description: command.description || "", enabled: !disabled.has(command.name) })) });
     }
     if (action === "groupCommandSet") {
       const id = String(body.chat_id || "").trim(), name = String(body.command_name || "").trim().toLowerCase();
       if (!/^-\d+$/.test(id) || !ADMIN_COMMANDS.some(command => command.name === name && !command.ownerOnly) || typeof body.enabled !== "boolean") return json({ ok: false, error: "إعداد الأمر غير صالح." }, 400);
-      await env.DB.prepare(`INSERT INTO group_command_settings(chat_id,command_name,enabled,updated_by)
-        VALUES(?,?,?,?) ON CONFLICT(chat_id,command_name) DO UPDATE SET enabled=excluded.enabled,
-        updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`).bind(id, name, body.enabled ? 1 : 0, actorId).run();
+      await env.DB.prepare(`INSERT INTO system_group_command_settings(system_scope,chat_id,command_name,enabled,updated_by)
+        VALUES(?,?,?,?,?) ON CONFLICT(system_scope,chat_id,command_name) DO UPDATE SET enabled=excluded.enabled,
+        updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`).bind(scope,id,name,body.enabled ? 1 : 0,actorId).run();
       await audit(env, actorId, "group_command_toggle", id, "", `${name}=${body.enabled ? "on" : "off"}`);
       return json({ ok: true });
     }
@@ -659,12 +997,13 @@ async function handleAdminApi(request, env) {
       } else if (!admins.some(a => String(a.user_id) === OWNER_ID)) {
         admins.unshift({ user_id: OWNER_ID, role: "primary_owner", permissions_json: '{"all":true}', added_by: "system" });
       }
-      return json({ ok: true, admins, roles: RBAC_ROLES, permission_ids: RBAC_PERMISSION_IDS });
+      return json({ ok: true, admins, roles: RBAC_ASSIGNABLE_ROLES, permission_ids: RBAC_PERMISSION_IDS });
     }
     if (action === "adminAdd") {
       const id = String(body.user_id || "").trim();
       if (!/^\d+$/.test(id) || id === OWNER_ID) return json({ ok: false, error: "معرّف المشرف غير صالح." }, 400);
-      const role = Object.prototype.hasOwnProperty.call(RBAC_ROLES, body.role) ? body.role : "admin";
+      const role = String(body.role || "admin");
+      if (!Object.prototype.hasOwnProperty.call(RBAC_ASSIGNABLE_ROLES, role)) return json({ ok: false, error: "الرتبة المطلوبة غير متاحة للتعيين." }, 400);
       if (await getAdmin(env, id)) return json({ ok: false, error: "هذا المستخدم مسؤول بالفعل. استخدم إدارة صلاحياته بدلاً من استبدال سجله." }, 409);
       if (role === "owner" && actorId !== OWNER_ID) return json({ ok: false, error: "إنشاء مالك مفوّض متاح للمالك الرئيسي فقط." }, 403);
       if (actorId !== OWNER_ID) {
@@ -681,7 +1020,7 @@ async function handleAdminApi(request, env) {
     if (action === "adminRoleSet") {
       const id = String(body.user_id || "").trim();
       const role = String(body.role || "");
-      if (!/^\\d+$/.test(id) || id === OWNER_ID || !Object.prototype.hasOwnProperty.call(RBAC_ROLES, role)) return json({ ok: false, error: "بيانات الرتبة غير صالحة." }, 400);
+      if (!/^\d+$/.test(id) || id === OWNER_ID || !Object.prototype.hasOwnProperty.call(RBAC_ASSIGNABLE_ROLES, role)) return json({ ok: false, error: "بيانات الرتبة غير صالحة." }, 400);
       if (role === "owner" && actorId !== OWNER_ID) return json({ ok: false, error: "إنشاء أو منح رتبة المالك المفوض متاح للمالك الرئيسي فقط." }, 403);
       const target = await getAdmin(env, id);
       if (!target) return json({ ok: false, error: "المستخدم المستهدف ليس مسؤولاً مسجلاً." }, 404);
@@ -788,10 +1127,11 @@ async function handleAdminApi(request, env) {
     }
     if (action === "statsData") {
       const canReadLogs = await hasPermission(env, actorId, "logs.read");
+      const statsScope = validScope(body.system_scope) ? body.system_scope : "";
       const [users, groups, messages, errors, auditRows, errorRows] = await Promise.all([
-        env.DB.prepare("SELECT COUNT(*) n FROM users").first(),
-        env.DB.prepare("SELECT COUNT(*) n FROM groups").first(),
-        env.DB.prepare("SELECT COALESCE(SUM(quantity),0) n FROM usage_stats WHERE event_type='message'").first(),
+        statsScope ? env.DB.prepare("SELECT COUNT(*) n FROM system_users WHERE system_scope=?").bind(statsScope).first() : env.DB.prepare("SELECT COUNT(*) n FROM users").first(),
+        statsScope ? env.DB.prepare("SELECT COUNT(*) n FROM system_groups WHERE system_scope=?").bind(statsScope).first() : env.DB.prepare("SELECT COUNT(*) n FROM groups").first(),
+        statsScope ? env.DB.prepare("SELECT COALESCE(SUM(quantity),0) n FROM system_usage_stats WHERE system_scope=? AND event_type='message'").bind(statsScope).first() : env.DB.prepare("SELECT COALESCE(SUM(quantity),0) n FROM usage_stats WHERE event_type='message'").first(),
         env.DB.prepare("SELECT COUNT(*) n FROM error_logs").first(),
         canReadLogs ? env.DB.prepare("SELECT id,action,actor_id,target_id,created_at FROM audit_logs ORDER BY id DESC LIMIT 40").all() : Promise.resolve({ results: [] }),
         canReadLogs ? env.DB.prepare("SELECT id,error_type,error_message,created_at FROM error_logs ORDER BY id DESC LIMIT 40").all() : Promise.resolve({ results: [] })
@@ -800,11 +1140,7 @@ async function handleAdminApi(request, env) {
     }
     if (action === "backupExport") {
       if (!(await isOwner(env, actorId))) return json({ ok: false, error: "هذا الإجراء مخصص للمالك الرئيسي لحماية إعدادات حسابه الشخصي." }, 403);
-      const snapshot = { app: "DAKI", version: VERSION, created_at: new Date().toISOString(), tables: {} };
-      for (const table of backupTables) {
-        const rows = await env.DB.prepare(`SELECT * FROM ${table} LIMIT 5000`).all();
-        snapshot.tables[table] = rows.results || [];
-      }
+      const snapshot = await createBackupSnapshot(env, backupTables, 5000);
       await env.DB.prepare("INSERT INTO backup_logs(backup_type,status,details) VALUES('miniapp-json-export','success',?)").bind(`tables=${backupTables.length}`).run();
       await audit(env, actorId, "miniapp_backup_export");
       return json({ ok: true, backup: snapshot });
@@ -812,7 +1148,8 @@ async function handleAdminApi(request, env) {
     if (action === "backupRestore") {
       if (!(await isOwner(env, actorId))) return json({ ok: false, error: "هذا الإجراء مخصص للمالك الرئيسي لحماية إعدادات حسابه الشخصي." }, 403);
       const backup = body.backup;
-      if (!backup || backup.app !== "DAKI" || !backup.tables || typeof backup.tables !== "object") return json({ ok: false, error: "ملف النسخة غير صالح." }, 400);
+      try { validateBackupSnapshot(backup, backupTables); }
+      catch (error) { return json({ ok: false, error: error.message }, 400); }
       let count = 0;
       for (const table of backupTables) {
         const rows = backup.tables[table];
@@ -820,13 +1157,13 @@ async function handleAdminApi(request, env) {
         const columnsInfo = await env.DB.prepare(`PRAGMA table_info(${table})`).all();
         const columns = (columnsInfo.results || []).map(c => c.name);
         for (const row of rows.slice(0, 5000)) {
-          if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+          if (table === "admins") continue;
           const keys = Object.keys(row).filter(k => columns.includes(k));
-          if (!keys.length || table === "admins") continue;
+          if (!keys.length) continue;
           if (table === "blocked_users" && String(row.user_id) === OWNER_ID) continue;
           const placeholders = keys.map(() => "?").join(",");
-          await env.DB.prepare(`INSERT OR IGNORE INTO ${table}(${keys.join(",")}) VALUES(${placeholders})`).bind(...keys.map(k => row[k] ?? null)).run();
-          count++;
+          const result = await env.DB.prepare(`INSERT OR IGNORE INTO ${table}(${keys.join(",")}) VALUES(${placeholders})`).bind(...keys.map(k => row[k] ?? null)).run();
+          count += Number(result.meta?.changes || 0);
         }
       }
       await audit(env, actorId, "miniapp_backup_restore_merge", "", "", `rows=${count}`);
@@ -835,14 +1172,14 @@ async function handleAdminApi(request, env) {
     }
     if (action === "settingsGet") {
       if (!(await isOwner(env, actorId))) return json({ ok: false, error: "هذا الإجراء مخصص للمالك الرئيسي لحماية إعدادات حسابه الشخصي." }, 403);
-      const keys = ["bot_enabled","maintenance","alerts_enabled"];
+      const keys = ["bot_enabled","business_enabled","maintenance","alerts_enabled"];
       const values = {};
       for (const key of keys) values[key] = await getSetting(env, key, key === "maintenance" ? "0" : "1");
       return json({ ok: true, settings: values });
     }
     if (action === "settingsSet") {
       if (!(await isOwner(env, actorId))) return json({ ok: false, error: "هذه إعدادات نظام حساسة ومخصصة للمالك الرئيسي." }, 403);
-      const allowed = new Set(["bot_enabled","maintenance","alerts_enabled"]);
+      const allowed = new Set(["bot_enabled","business_enabled","maintenance","alerts_enabled"]);
       const key = String(body.key || ""), value = String(body.value);
       if (!allowed.has(key) || !["0","1"].includes(value)) return json({ ok: false, error: "الإعداد المطلوب غير مسموح." }, 400);
       await setSetting(env, key, value, actorId);
@@ -937,7 +1274,7 @@ async function hasPermission(env, userId, permission) {
   const canonical = LEGACY_PERMISSION_MAP[permission] || permission;
   return hasRbacPermission({ role: admin.role, permissions: perms, permission: canonical, isPrimaryOwner: false });
 }
-const ADMIN_ROLE_RANK = Object.freeze({ primary_owner: 1000, owner: 90, super_admin: 80, admin: 60, moderator: 40, support: 30, translator: 20, member: 0, restricted: 0 });
+const ADMIN_ROLE_RANK = Object.freeze({ primary_owner: 1000, owner: 90, super_admin: 80, admin: 70, moderator: 60, support: 50, watcher: 40, translator: 20, member: 0, restricted: 0 });
 function effectiveAdminPermissions(admin) {
   if (!admin) return [];
   let stored = {};
@@ -957,13 +1294,13 @@ async function canManageAdminTarget(env, actorId, targetId) {
   const actorPermissions = new Set(effectiveAdminPermissions(actor));
   return effectiveAdminPermissions(target).every(permission => actorPermissions.has(permission));
 }
-async function upsertUser(env, from) {
+async function upsertUser(env, from, business = false) {
   if (!from?.id) return;
-  await env.DB.prepare(`INSERT INTO users(user_id,username,first_name,language,last_seen)
-    VALUES(?,?,?,?,CURRENT_TIMESTAMP)
-    ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,
-    first_name=excluded.first_name,language=excluded.language,last_seen=CURRENT_TIMESTAMP`)
-    .bind(getUserId(from), from.username || null, from.first_name || null, from.language_code || null).run();
+  const scope = business ? "business" : "bot";
+  await env.DB.prepare(`INSERT INTO system_users(system_scope,user_id,username,first_name,language,last_seen)
+    VALUES(?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(system_scope,user_id) DO UPDATE SET
+    username=excluded.username,first_name=excluded.first_name,language=excluded.language,last_seen=CURRENT_TIMESTAMP`)
+    .bind(scope,getUserId(from),from.username || null,from.first_name || null,from.language_code || null).run();
 }
 async function getConversation(env, key, chatId, userId, connectionId, chatType) {
   await env.DB.prepare(`INSERT INTO conversations(conversation_key,chat_id,user_id,
@@ -996,6 +1333,31 @@ async function loadInstructions(env) {
   ).all();
   return (rows.results || []).map(x => x.instruction).join("\n");
 }
+async function loadSystemConfig(env, scope) {
+  const rows = await env.DB.prepare("SELECT config_key,config_value FROM system_config WHERE system_scope=?").bind(scope).all();
+  return Object.fromEntries((rows.results || []).map(row => [row.config_key,row.config_value]));
+}
+async function loadSystemInstructions(env, scope) {
+  const rows = await env.DB.prepare("SELECT instruction FROM system_instructions WHERE system_scope=? AND active=1 ORDER BY id ASC LIMIT 30").bind(scope).all();
+  return (rows.results || []).map(row => row.instruction).join("\n");
+}
+async function isSystemBanned(env, scope, userId) {
+  const row = await env.DB.prepare("SELECT user_id FROM system_bans WHERE system_scope=? AND user_id=?").bind(scope,String(userId)).first();
+  return !!row;
+}
+async function isSystemContentBlocked(env, scope, text) {
+  const rows = await env.DB.prepare("SELECT rule_type,rule_value FROM system_rules WHERE system_scope=? AND enabled=1").bind(scope).all();
+  const source = String(text || "").toLocaleLowerCase();
+  const config = await loadSystemConfig(env, scope);
+  if (config.block_links === "1" && /(?:https?:\/\/|www\.|t\.me\/)/i.test(source)) return true;
+  for (const rule of rows.results || []) {
+    const value = String(rule.rule_value || "").toLocaleLowerCase().trim();
+    if (!value) continue;
+    if (rule.rule_type === "banned_word" && source.includes(value)) return true;
+    if (rule.rule_type === "blocked_link" && source.includes(value)) return true;
+  }
+  return false;
+}
 async function loadBotProfile(env) {
   const rows = await env.DB.prepare("SELECT setting_key,setting_value FROM bot_profile_settings").all();
   return Object.fromEntries((rows.results || []).map(row => [row.setting_key, row.setting_value]));
@@ -1018,36 +1380,48 @@ function buildBotOnlyInstructions(profile, instructions) {
   if (instructions) parts.push(`تعليمات إضافية خاصة بالبوت العادي فقط:\n${instructions}`);
   return parts.join("\n");
 }
-async function updateLearning(env, userId, userText, answer) {
+async function updateLearning(env, scope, userId, userText, answer) {
   try {
-    await env.DB.prepare(
-      "INSERT INTO usage_stats(user_id,event_type,event_date,quantity) VALUES(?,'message',CURRENT_DATE,1)"
-    ).bind(String(userId)).run();
+    await env.DB.prepare(`INSERT INTO system_usage_stats(system_scope,user_id,event_type,event_date,quantity)
+      VALUES(?,?,'message',CURRENT_DATE,1)
+      ON CONFLICT(system_scope,user_id,event_type,event_date) DO UPDATE SET quantity=quantity+1`)
+      .bind(scope,String(userId)).run();
     const isGerman = /[äöüß]|\b(ich|du|der|die|das|und|ist|nicht|haben|sein)\b/i.test(userText);
-    await env.DB.prepare(`INSERT INTO learning_profiles(user_id,updated_at)
-      VALUES(?,CURRENT_TIMESTAMP) ON CONFLICT(user_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP`)
-      .bind(String(userId)).run();
+    await env.DB.prepare(`INSERT INTO system_learning_profiles(system_scope,user_id,updated_at)
+      VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(system_scope,user_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP`)
+      .bind(scope,String(userId)).run();
     if (isGerman) {
-      await env.DB.prepare(`UPDATE learning_profiles SET total_exercises=total_exercises+1,
-        progress_notes=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=?`)
-        .bind(safeString(`آخر نشاط ألماني: ${userText.slice(0,180)}`, 300), String(userId)).run();
+      await env.DB.prepare(`UPDATE system_learning_profiles SET total_exercises=total_exercises+1,
+        progress_notes=?,updated_at=CURRENT_TIMESTAMP WHERE system_scope=? AND user_id=?`)
+        .bind(safeString(`آخر نشاط ألماني: ${userText.slice(0,180)}`, 300),scope,String(userId)).run();
     }
   } catch (e) { console.error("learning update:", e.message); }
 }
 async function aiReply(env, conversationId, userId, userText, business = false) {
   if (!env.AI?.run) throw new Error("Workers AI binding AI is missing");
   const history = await loadHistory(env, conversationId);
-  // Keep the Telegram Business instruction path unchanged; configure only normal bot chats separately.
-  const extra = business ? await loadInstructions(env) : buildBotOnlyInstructions(await loadBotProfile(env), await loadBotInstructions(env));
-  const system = SYSTEM_PROMPT + (extra ? (business ? `\n\nAdditional owner instructions:\n${extra}` : `\n\nBot-only configuration (never apply to Telegram Business):\n${extra}`) : "");
+  const scope = business ? "business" : "bot";
+  const config = await loadSystemConfig(env, scope);
+  const instructions = await loadSystemInstructions(env, scope);
+  const legacyExtra = business ? "" : buildBotOnlyInstructions(await loadBotProfile(env), await loadBotInstructions(env));
+  const configParts = [];
+  const labels = business
+    ? { bot_name:"اسم المساعد",tone:"نبرة الرد",reply_length:"طول الرد",working_hours:"ساعات العمل",schedule_start:"بداية الدوام",schedule_end:"نهاية الدوام",away_message:"رسالة الانشغال",thinking_style:"أسلوب التفكير",system_prompt:"تعليمات الشخصية",extra_rules:"قواعد إضافية" }
+    : { personality:"الشخصية",tone:"نبرة الرد",language:"لغة الرد",detail:"مستوى التفصيل",topic:"مجال البوت",extra_rules:"قواعد إضافية" };
+  for (const [key,label] of Object.entries(labels)) if (String(config[key] || "").trim()) configParts.push(`${label}: ${safeString(config[key], key === "system_prompt" ? 8000 : 1200)}`);
+  if (instructions) configParts.push(`تعليمات إدارية خاصة بنظام ${scope}:\n${instructions}`);
+  if (legacyExtra) configParts.push(legacyExtra);
+  const extra = configParts.join("\n");
+  const system = SYSTEM_PROMPT + (extra ? (business ? `\n\nBusiness account configuration:\n${extra}` : `\n\nBot-only configuration (never apply to Telegram Business):\n${extra}`) : "");
+  const temperature = config.temperature === undefined || config.temperature === "" ? undefined : Number(config.temperature);
   const parsed = await runAIWithRetry(env, [
     { role: "system", content: system },
     ...history,
     { role: "user", content: userText }
-  ]);
+  ], Number.isFinite(temperature) ? temperature : undefined);
   await saveMessage(env, conversationId, "user", userText);
   await saveMessage(env, conversationId, "assistant", parsed.reply);
-  await updateLearning(env, userId, userText, parsed.reply);
+  await updateLearning(env, business ? "business" : "bot", userId, userText, parsed.reply);
   return parsed;
 }
 function welcomeMarker(connectionId) {
@@ -1104,19 +1478,22 @@ function replyOptions(msg, business) {
   if (msg.message_id) options.reply_parameters = { message_id: msg.message_id, allow_sending_without_reply: true };
   return options;
 }
-async function isGroupAllowed(env, chatId, textMessage, replyTo) {
-  const row = await env.DB.prepare("SELECT enabled FROM groups WHERE chat_id=?")
-    .bind(String(chatId)).first();
+async function isGroupAllowed(env, chatId, textMessage, replyTo, business = false) {
+  const scope = business ? "business" : "bot";
+  const row = await env.DB.prepare("SELECT enabled,mode FROM system_groups WHERE system_scope=? AND chat_id=?")
+    .bind(scope,String(chatId)).first();
   if (row?.enabled === 0) return false;
+  if (row?.mode === "all") return true;
   const mention = new RegExp(`@${OWNER_USERNAME}\\b`, "i").test(textMessage || "");
   const replyUsername = String(replyTo?.from?.username || replyTo?.sender_chat?.username || "").replace(/^@/, "").toLowerCase();
   const reply = replyUsername === OWNER_USERNAME.toLowerCase();
   return mention || reply;
 }
-async function upsertGroup(env, chat) {
-  await env.DB.prepare(`INSERT INTO groups(chat_id,title,enabled,mode)
-    VALUES(?,?,1,'mention') ON CONFLICT(chat_id) DO UPDATE SET title=excluded.title`)
-    .bind(String(chat.id), chat.title || "Group").run();
+async function upsertGroup(env, chat, business = false) {
+  const scope = business ? "business" : "bot";
+  await env.DB.prepare(`INSERT INTO system_groups(system_scope,chat_id,title,enabled,mode)
+    VALUES(?,?,?,1,'mention') ON CONFLICT(system_scope,chat_id) DO UPDATE SET title=excluded.title`)
+    .bind(scope,String(chat.id),chat.title || "Group").run();
 }
 function mainPanelKeyboard() {
   const rows = [];
@@ -1176,11 +1553,10 @@ async function editPanel(env, query, category) {
 async function sendBackup(env, chatId) {
   const tables = ["users","conversations","messages","learning_profiles","recurring_mistakes",
     "admins","admin_custom_commands","blocked_users","warnings","groups","bot_settings","instructions","audit_logs",
-    "alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state"];
-  const snapshot = { app: "DAKI", version: VERSION, created_at: new Date().toISOString(), tables: {} };
-  for (const table of tables) {
-    const rows = await env.DB.prepare(`SELECT * FROM ${table}`).all();
-    snapshot.tables[table] = rows.results || [];
+    "alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state","bot_profile_settings","bot_instructions","group_command_settings","system_config","system_instructions","system_bans","system_users","system_groups","system_rules","system_rate_limits","system_mutes","system_usage_stats","system_learning_profiles","system_warnings","system_group_command_settings","system_group_bans","system_broadcast_jobs","system_broadcast_recipients"];
+  const snapshot = await createBackupSnapshot(env, tables, 5000);
+  if (snapshot.truncated_tables.length) {
+    throw new Error(`تعذر إنشاء نسخة كاملة: تجاوزت الجداول التالية 5000 سجل: ${snapshot.truncated_tables.join(", ")}. يلزم تصدير مجزأ قبل اعتبار النسخة صالحة للاستعادة.`);
   }
   const body = JSON.stringify(snapshot, null, 2);
   const blob = new Blob([body], { type: "application/json" });
@@ -1205,14 +1581,14 @@ async function restoreBackup(env, message, actorId) {
   const response = await fetch(fileUrl);
   if (!response.ok) throw new Error("تعذر تنزيل ملف النسخة الاحتياطية.");
   const backup = await response.json();
-  if (backup?.app !== "DAKI" || !backup.tables || typeof backup.tables !== "object") {
-    throw new Error("صيغة النسخة غير معروفة؛ لم يتم تغيير قاعدة البيانات.");
-  }
+  validateBackupSnapshot(backup, ["users","conversations","messages","learning_profiles","recurring_mistakes",
+    "admins","admin_custom_commands","blocked_users","warnings","groups","bot_settings","instructions",
+    "audit_logs","alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state","bot_profile_settings","bot_instructions","group_command_settings","system_config","system_instructions","system_bans","system_users","system_groups","system_rules","system_rate_limits","system_mutes","system_usage_stats","system_learning_profiles","system_warnings","system_group_command_settings","system_group_bans","system_broadcast_jobs","system_broadcast_recipients"]);
   // Restore is deliberately merge-only: existing rows are not deleted.
   // Parent tables are restored before dependent message rows.
   const allowed = ["users","conversations","messages","learning_profiles","recurring_mistakes",
     "admins","admin_custom_commands","blocked_users","warnings","groups","bot_settings","instructions",
-    "audit_logs","alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state","bot_profile_settings","bot_instructions","group_command_settings"];
+    "audit_logs","alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state","bot_profile_settings","bot_instructions","group_command_settings","system_config","system_instructions","system_bans","system_users","system_groups","system_rules","system_rate_limits","system_mutes","system_usage_stats","system_learning_profiles","system_warnings","system_group_command_settings","system_group_bans","system_broadcast_jobs","system_broadcast_recipients"];
   let count = 0;
   for (const table of allowed) {
     const rows = backup.tables[table];
@@ -1220,16 +1596,16 @@ async function restoreBackup(env, message, actorId) {
     const columnsInfo = await env.DB.prepare(`PRAGMA table_info(${table})`).all();
     const columns = (columnsInfo.results || []).map(c => c.name);
     for (const row of rows.slice(0, 5000)) {
-      const keys = Object.keys(row).filter(k => columns.includes(k));
-      if (!keys.length) continue;
       // Never restore admin roles from an uploaded backup; privilege escalation risk.
       if (table === "admins") continue;
+      const keys = Object.keys(row).filter(k => columns.includes(k));
+      if (!keys.length) continue;
       // The primary owner must never be imported as blocked.
       if (table === "blocked_users" && String(row.user_id) === OWNER_ID) continue;
       const placeholders = keys.map(() => "?").join(",");
       const sql = `INSERT OR IGNORE INTO ${table}(${keys.join(",")}) VALUES(${placeholders})`;
-      await env.DB.prepare(sql).bind(...keys.map(k => row[k] ?? null)).run();
-      count++;
+      const result = await env.DB.prepare(sql).bind(...keys.map(k => row[k] ?? null)).run();
+      count += Number(result.meta?.changes || 0);
     }
   }
   await audit(env, actorId, "restore_merge", "", "", `rows considered=${count}`);
@@ -1393,6 +1769,43 @@ async function handleCallback(env, query) {
   }
 }
 
+function businessScheduleState(config, now = new Date()) {
+  const start = String(config.schedule_start || "").trim();
+  const end = String(config.schedule_end || "").trim();
+  if (!start || !end) return { configured:false, open:true };
+  const timezone = String(config.schedule_timezone || "UTC");
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat("en-GB", { timeZone:timezone, hour:"2-digit", minute:"2-digit", hourCycle:"h23" }).formatToParts(now);
+  } catch (_) { return { configured:false, open:true, invalidTimezone:true }; }
+  const part = key => Number(parts.find(x => x.type === key)?.value || 0);
+  const current = part("hour") * 60 + part("minute");
+  const toMinutes = value => { const [h,m] = value.split(":").map(Number); return h*60+m; };
+  const from = toMinutes(start), until = toMinutes(end);
+  const open = from === until ? true : (from < until ? current >= from && current < until : current >= from || current < until);
+  return { configured:true, open, timezone };
+}
+async function consumeSystemRateLimit(env, scope, userId, limit) {
+  const max = Number(limit || 0);
+  if (!Number.isInteger(max) || max <= 0) return true;
+  const now = nowTs();
+  const row = await env.DB.prepare(`INSERT INTO system_rate_limits(system_scope,user_id,window_started,request_count)
+    VALUES(?,?,?,1) ON CONFLICT(system_scope,user_id) DO UPDATE SET
+    window_started=CASE WHEN system_rate_limits.window_started <= ? THEN excluded.window_started ELSE system_rate_limits.window_started END,
+    request_count=CASE WHEN system_rate_limits.window_started <= ? THEN 1 ELSE system_rate_limits.request_count+1 END
+    RETURNING request_count`).bind(scope,String(userId),now,now-3600,now-3600).first();
+  return Number(row?.request_count || 0) <= max;
+}
+async function markBusinessMessageRead(env, msg, config) {
+  if (config.auto_read_messages !== "1" || !msg.business_connection_id || !msg.message_id) return;
+  try {
+    await tg(env,"readBusinessMessage",{business_connection_id:msg.business_connection_id,chat_id:msg.chat.id,message_id:msg.message_id});
+  } catch (error) {
+    // This feature requires Telegram Business right can_read_messages; never fail the reply if absent.
+    await logError(env,"BUSINESS_READ_MESSAGE",error,`chat=${msg.chat.id},message=${msg.message_id}`);
+  }
+}
+
 async function handleMessage(env, msg, business) {
   if (!msg?.chat || !msg?.from || msg.from.is_bot) return;
   const actorId = getUserId(msg.from);
@@ -1400,11 +1813,21 @@ async function handleMessage(env, msg, business) {
   const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup";
   const connectionId = business ? msg.business_connection_id : "";
   const messageText = String(msg.text || msg.caption || "").trim();
+  const activeScope = business ? "business" : "bot";
+  const scopedReplyConfig = await loadSystemConfig(env, activeScope);
 
-  await upsertUser(env, msg.from);
-  if (isGroup) await upsertGroup(env, msg.chat);
+  await upsertUser(env, msg.from, business);
+  if (isGroup) await upsertGroup(env, msg.chat, business);
 
   const command = parseCommand(messageText, BOT_USERNAME);
+  if (business && actorId === OWNER_ID && !command && scopedReplyConfig.stop_on_manual_reply !== "0") {
+    const peerId = String(chatId);
+    const manualPauseKey = assistantPauseStateKey({ chat: { id: chatId } }, peerId, true);
+    await env.DB.prepare(`INSERT INTO daki_state(state_key,state_value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
+      ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at=CURRENT_TIMESTAMP`)
+      .bind(manualPauseKey,String(nowTs()+24*60*60)).run();
+    return;
+  }
   const stateKey = handoffStateKey(msg, actorId, business);
   if (command?.name === "bot") {
     await env.DB.prepare("DELETE FROM daki_state WHERE state_key=? OR state_key=?")
@@ -1452,7 +1875,7 @@ async function handleMessage(env, msg, business) {
   const handoffHistory = existingHandoffConversation
     ? await loadHistory(env, existingHandoffConversation.id)
     : [];
-  if (!command && actorId !== OWNER_ID &&
+  if (!command && actorId !== OWNER_ID && scopedReplyConfig.handoff_enabled !== "0" &&
       await detectHumanHandoffIntent(env, messageText, handoffHistory)) {
     const displayName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(" ") || "غير معروف";
     const username = msg.from.username ? "@" + msg.from.username : "بدون اسم مستخدم";
@@ -1471,7 +1894,8 @@ async function handleMessage(env, msg, business) {
         { ...replyOptions(msg, business), reply_markup: { inline_keyboard: [[{ text: "Daki Schule", url: CHANNEL_URL }]] } });
       return;
     }
-    const until = nowTs() + 10 * 60 * 60;
+    const pauseHours = Math.max(1, Math.min(72, Number(scopedReplyConfig.handoff_pause_hours || 10) || 10));
+    const until = nowTs() + pauseHours * 60 * 60;
     await env.DB.prepare(`INSERT INTO daki_state(state_key,state_value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
       ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at=CURRENT_TIMESTAMP`)
       .bind(stateKey, String(until)).run();
@@ -1501,8 +1925,8 @@ async function handleMessage(env, msg, business) {
 
   if (command) {
     if (isGroup && ADMIN_COMMANDS.some(item => item.name === command.name)) {
-      const groupCommand = await env.DB.prepare("SELECT enabled FROM group_command_settings WHERE chat_id=? AND command_name=?")
-        .bind(String(chatId), command.name).first();
+      const groupCommand = await env.DB.prepare("SELECT enabled FROM system_group_command_settings WHERE system_scope=? AND chat_id=? AND command_name=?")
+        .bind(activeScope,String(chatId), command.name).first();
       if (groupCommand && Number(groupCommand.enabled) === 0 && actorId !== OWNER_ID) {
         await sendMessage(env, chatId, "هذا الأمر غير مفعّل في هذه المجموعة.", replyOptions(msg, business));
         return;
@@ -1512,32 +1936,57 @@ async function handleMessage(env, msg, business) {
     if (handled) return;
   }
 
-  if (await isBlocked(env, actorId)) return;
-  const mute = await env.DB.prepare("SELECT until_ts FROM mutes WHERE user_id=? AND chat_id=?")
-    .bind(actorId, String(chatId)).first();
+  if (await isSystemBanned(env, activeScope, actorId)) return;
+  if (await isSystemContentBlocked(env, activeScope, messageText)) return;
+  const mute = await env.DB.prepare("SELECT until_ts FROM system_mutes WHERE system_scope=? AND user_id=? AND chat_id=?")
+    .bind(activeScope,actorId,String(chatId)).first();
   if (mute && Number(mute.until_ts) > nowTs()) return;
-  if (mute) await env.DB.prepare("DELETE FROM mutes WHERE user_id=? AND chat_id=?")
-    .bind(actorId, String(chatId)).run();
+  if (mute) await env.DB.prepare("DELETE FROM system_mutes WHERE system_scope=? AND user_id=? AND chat_id=?")
+    .bind(activeScope,actorId,String(chatId)).run();
   if (isGroup) {
-    const allowed = await isGroupAllowed(env, chatId, messageText, msg.reply_to_message);
+    const scopedConfig = await loadSystemConfig(env, business ? "business" : "bot");
+    if (business && scopedConfig.group_auto_reply !== "1") return;
+    const allowed = await isGroupAllowed(env, chatId, messageText, msg.reply_to_message, business);
     if (!allowed) return;
   } else if (!business && !isPrivate(msg.chat)) {
     return;
   }
 
   if (!messageText) return;
-  if (await getSetting(env, "bot_enabled", "1") !== "1") {
-    if (actorId === OWNER_ID) await sendMessage(env, chatId, "ردود DAKI متوقفة حالياً. استخدم /dakion لإعادة التشغيل.", replyOptions(msg, business));
+  if (business && isPrivate(msg.chat) && scopedReplyConfig.private_auto_reply === "0") return;
+  // Keep Telegram Business and the standalone bot independently switchable.
+  // Existing bot_enabled values continue to control the bot; Business defaults to enabled.
+  const enabledKey = business ? "business_enabled" : "bot_enabled";
+  if (await getSetting(env, enabledKey, "1") !== "1") {
+    if (actorId === OWNER_ID) {
+      const label = business ? "مساعد حساب Telegram Business" : "بوت DAKI";
+      await sendMessage(env, chatId, `${label} متوقف حالياً من لوحة الإدارة.`, replyOptions(msg, business));
+    }
     return;
   }
-  if (await getSetting(env, "maintenance", "0") === "1" && actorId !== OWNER_ID) {
+  if (!business && await getSetting(env, "maintenance", "0") === "1" && actorId !== OWNER_ID) {
     await sendMessage(env, chatId, "DAKI في وضع الصيانة حالياً. حاول مرة أخرى لاحقاً.", replyOptions(msg, business));
     return;
+  }
+  if (actorId !== OWNER_ID && !(await consumeSystemRateLimit(env,activeScope,actorId,scopedReplyConfig.rate_limit_per_user))) return;
+  if (business) {
+    const schedule = businessScheduleState(scopedReplyConfig);
+    if (!schedule.open && actorId !== OWNER_ID) {
+      const away = String(scopedReplyConfig.away_message || "شكراً لرسالتك. نحن خارج ساعات العمل حالياً وسنعود إليك عند استئناف الدوام.").trim();
+      await sendMessage(env,chatId,away,replyOptions(msg,business));
+      await markBusinessMessageRead(env,msg,scopedReplyConfig);
+      return;
+    }
   }
 
   const key = conversationKey(chatId, connectionId, actorId, business);
   const conversation = await getConversation(env, key, chatId, actorId, connectionId, msg.chat.type);
   try {
+    const typingDelay = business ? Math.max(0, Math.min(8, Number(scopedReplyConfig.typing_delay || 0) || 0)) : 0;
+    if (typingDelay > 0) {
+      await tg(env, "sendChatAction", { chat_id: chatId, action: "typing", ...(connectionId ? { business_connection_id: connectionId } : {}) });
+      await new Promise(resolve => setTimeout(resolve, typingDelay * 1000));
+    }
     const parsed = await aiReply(env, conversation.id, actorId, messageText, business);
     const answer = String(parsed.reply || "").trim();
     const parts = splitAnswerCoherently(answer, 2800);
@@ -1556,6 +2005,7 @@ async function handleMessage(env, msg, business) {
         }
       }
     }
+    if (business) await markBusinessMessageRead(env,msg,scopedReplyConfig);
   } catch (e) {
     await logError(env, "AI_REPLY", e, `user=${actorId}, chat=${chatId}`);
     await sendMessage(env, chatId,
