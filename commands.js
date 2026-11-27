@@ -100,7 +100,11 @@ export async function ensureTelegramCommands(env, { VERSION, tg, safeString }) {
   ];
   const buildCommands = language => [
     { command: "start", description: language === "ar" ? "بدء المحادثة" : language === "de" ? "Gespräch starten" : language === "zh" ? "开始对话" : "Start the conversation" },
-    { command: "bot", description: language === "ar" ? "استئناف المساعد" : language === "de" ? "Assistent fortsetzen" : language === "zh" ? "恢复助手" : "Resume the assistant" }
+    { command: "bot", description: language === "ar" ? "استئناف المساعد" : language === "de" ? "Assistent fortsetzen" : language === "zh" ? "恢复助手" : "Resume the assistant" },
+    ...ADMIN_COMMANDS.map(command => ({
+      command: command.name,
+      description: safeString(command.labels[language] || command.labels.ar, 240)
+    }))
   ];
 
   for (const scope of scopes) {
@@ -225,22 +229,21 @@ async function executeCommand(env, msg, business, actorId, command, deps) {
         out = `إصدار DAKI: ${VERSION}\nCloudflare Worker يعيد التشغيل تلقائياً عند نشر إصدار جديد.`;
         break;
       case "users": {
-        const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM system_users WHERE system_scope=?").bind(business ? "business" : "bot").first();
+        const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM users").first();
         out = `عدد المستخدمين المسجلين: ${row?.n ?? 0}`; break;
       }
       case "userinfo":
       case "searchuser": {
         if (!(await requirePerm("users"))) return denied(), true;
         if (!targetId) { out = "استخدم الأمر بالرد على المستخدم أو اكتب رقمه بعد الأمر."; break; }
-        const u = await env.DB.prepare("SELECT * FROM system_users WHERE system_scope=? AND user_id=?").bind(business ? "business" : "bot",targetId).first();
+        const u = await env.DB.prepare("SELECT * FROM users WHERE user_id=?").bind(targetId).first();
         out = u ? `المستخدم: ${u.first_name || "—"}\nID: ${u.user_id}\nUsername: @${u.username || "—"}\nاللغة: ${u.language || "—"}\nآخر نشاط: ${u.last_seen}` : "لم أعثر على هذا المستخدم.";
         break;
       }
       case "userhistory": {
         if (!(await requirePerm("users"))) return denied(), true;
         if (!targetId) { out = "رد على رسالة المستخدم بالأمر /userhistory."; break; }
-        const conversationPrefix = business ? "business:%" : "chat:%";
-        const c = await env.DB.prepare("SELECT id FROM conversations WHERE user_id=? AND conversation_key LIKE ? ORDER BY updated_at DESC LIMIT 1").bind(targetId, conversationPrefix).first();
+        const c = await env.DB.prepare("SELECT id FROM conversations WHERE user_id=? ORDER BY updated_at DESC LIMIT 1").bind(targetId).first();
         if (!c) { out = "لا يوجد سجل محادثة."; break; }
         const rows = await env.DB.prepare("SELECT sender,message_text,created_at FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 10").bind(c.id).all();
         out = (rows.results || []).reverse().map(r => `${r.sender === "assistant" ? "DAKI" : "المستخدم"}: ${r.message_text}`).join("\n\n") || "السجل فارغ.";
@@ -251,34 +254,19 @@ async function executeCommand(env, msg, business, actorId, command, deps) {
         const id = name === "clearmemory" ? actorId : targetId;
         if (!id) { out = "رد على رسالة المستخدم بالأمر /forgetuser."; break; }
         if (id !== actorId && !owner && !(await requirePerm("users"))) return denied(), true;
-        const conversationPrefix = business ? "business:%" : "chat:%";
-        const convs = await env.DB.prepare("SELECT id FROM conversations WHERE user_id=? AND conversation_key LIKE ?").bind(id, conversationPrefix).all();
+        const convs = await env.DB.prepare("SELECT id FROM conversations WHERE user_id=?").bind(id).all();
         for (const c of convs.results || []) {
           await env.DB.prepare("DELETE FROM messages WHERE conversation_id=?").bind(c.id).run();
         }
-        await env.DB.prepare("DELETE FROM conversations WHERE user_id=? AND conversation_key LIKE ?").bind(id, conversationPrefix).run();
-        const scope = business ? "business" : "bot";
-        await env.DB.prepare("DELETE FROM system_learning_profiles WHERE system_scope=? AND user_id=?").bind(scope, id).run();
-        await env.DB.prepare("DELETE FROM system_usage_stats WHERE system_scope=? AND user_id=?").bind(scope, id).run();
-        await env.DB.prepare("DELETE FROM system_rate_limits WHERE system_scope=? AND user_id=?").bind(scope, id).run();
-        await env.DB.prepare("DELETE FROM system_mutes WHERE system_scope=? AND user_id=?").bind(scope, id).run();
-        await env.DB.prepare("DELETE FROM system_warnings WHERE system_scope=? AND user_id=?").bind(scope, id).run();
-        if (scope === "bot") await env.DB.prepare("DELETE FROM welcome_events WHERE user_id=? AND connection_id='|welcome-bot-admin-v1'").bind(id).run();
-        else await env.DB.prepare("DELETE FROM welcome_events WHERE user_id=? AND connection_id!='|welcome-bot-admin-v1'").bind(id).run();
-        if (scope === "bot") {
-          for (const prefix of ["handoff:bot:%:","continuation:bot:%:","assistant_pause:bot:%:"]) await env.DB.prepare("DELETE FROM daki_state WHERE state_key LIKE ?").bind(prefix + id).run();
-        } else {
-          for (const prefix of ["handoff:%:","continuation:%:"]) await env.DB.prepare("DELETE FROM daki_state WHERE state_key LIKE ? AND state_key NOT LIKE ?").bind(prefix + id, prefix.replace(":%:", ":bot:%:") + id).run();
-          await env.DB.prepare("DELETE FROM daki_state WHERE state_key LIKE ?").bind("assistant_pause:business:%:" + id).run();
-        }
-        await env.DB.prepare("DELETE FROM system_users WHERE system_scope=? AND user_id=?").bind(scope, id).run();
+        await env.DB.prepare("DELETE FROM conversations WHERE user_id=?").bind(id).run();
+        await env.DB.prepare("DELETE FROM learning_profiles WHERE user_id=?").bind(id).run();
         await audit(env, actorId, "forget_user", id);
         out = "تم حذف سجل المحادثات وملف التعلم لهذا المستخدم من D1.";
         break;
       }
       case "blocked": {
         if (!(await requirePerm("moderation"))) return denied(), true;
-        const rows = await env.DB.prepare("SELECT user_id,reason FROM system_bans WHERE system_scope=? ORDER BY created_at DESC LIMIT 30").bind(business ? "business" : "bot").all();
+        const rows = await env.DB.prepare("SELECT user_id,reason FROM blocked_users ORDER BY created_at DESC LIMIT 30").all();
         out = (rows.results || []).map(r => `${r.user_id}${r.reason ? " — " + r.reason : ""}`).join("\n") || "لا يوجد مستخدمون محظورون.";
         break;
       }
@@ -290,14 +278,14 @@ async function executeCommand(env, msg, business, actorId, command, deps) {
         if (!targetId) { out = "رد على رسالة الشخص بالأمر، أو اكتب ID بعد الأمر."; break; }
         if (targetId === OWNER_ID) { out = "لا يمكن حظر أو تعديل صلاحيات المالك الرئيسي."; break; }
         if (name === "warn") {
-          await env.DB.prepare("INSERT INTO system_warnings(system_scope,user_id,reason,issued_by) VALUES(?,?,?,?)").bind(business ? "business" : "bot",targetId, reason || "بدون سبب", actorId).run();
+          await env.DB.prepare("INSERT INTO warnings(user_id,reason,issued_by) VALUES(?,?,?)").bind(targetId, reason || "بدون سبب", actorId).run();
           await audit(env, actorId, "warn", targetId, reason);
           out = `تم تسجيل تحذير للمستخدم ${targetId}.`;
         } else if (name === "mute") {
           const until = nowTs() + 3600;
-          await env.DB.prepare(`INSERT INTO system_mutes(system_scope,user_id,chat_id,until_ts,reason,muted_by) VALUES(?,?,?,?,?,?)
-            ON CONFLICT(system_scope,user_id,chat_id) DO UPDATE SET until_ts=excluded.until_ts,reason=excluded.reason,muted_by=excluded.muted_by`)
-            .bind(business ? "business" : "bot", targetId, String(chatId), until, reason || "ساعة واحدة", actorId).run();
+          await env.DB.prepare(`INSERT INTO mutes(user_id,chat_id,until_ts,reason,muted_by) VALUES(?,?,?,?,?)
+            ON CONFLICT(user_id,chat_id) DO UPDATE SET until_ts=excluded.until_ts,reason=excluded.reason,muted_by=excluded.muted_by`)
+            .bind(targetId, String(chatId), until, reason || "ساعة واحدة", actorId).run();
           if (!business && msg.chat.type !== "private") {
             try { await tg(env, "restrictChatMember", { chat_id: chatId, user_id: Number(targetId), permissions: { can_send_messages: false }, until_date: until }); }
             catch (e) { out = `تم حفظ الكتم محلياً، لكن Telegram رفض تقييد العضو: ${e.message}`; break; }
@@ -305,9 +293,8 @@ async function executeCommand(env, msg, business, actorId, command, deps) {
           await audit(env, actorId, "mute", targetId, reason);
           out = `تم كتم المستخدم ${targetId} لمدة ساعة في هذه المحادثة.`;
         } else if (name === "ban") {
-          await env.DB.prepare(`INSERT INTO system_bans(system_scope,user_id,reason,blocked_by) VALUES(?,?,?,?)
-            ON CONFLICT(system_scope,user_id) DO UPDATE SET reason=excluded.reason,blocked_by=excluded.blocked_by,created_at=CURRENT_TIMESTAMP`)
-            .bind(business ? "business" : "bot", targetId, reason || "بدون سبب", actorId).run();
+          await env.DB.prepare("INSERT OR REPLACE INTO blocked_users(user_id,reason,blocked_by) VALUES(?,?,?)").bind(targetId, reason || "بدون سبب", actorId).run();
+          await env.DB.prepare("UPDATE users SET is_blocked=1 WHERE user_id=?").bind(targetId).run();
           if (!business && msg.chat.type !== "private") {
             try { await tg(env, "banChatMember", { chat_id: chatId, user_id: Number(targetId) }); }
             catch (e) { out = `حُظر من DAKI، لكن Telegram لم يسمح بحظره في المجموعة: ${e.message}`; }
@@ -315,7 +302,8 @@ async function executeCommand(env, msg, business, actorId, command, deps) {
           await audit(env, actorId, "ban", targetId, reason);
           if (!out) out = business ? `تم حظر المستخدم من DAKI فقط. لا يمكن لهذا الأمر حظره من حسابك الشخصي في Telegram.` : `تم حظر المستخدم من DAKI.`;
         } else {
-          await env.DB.prepare("DELETE FROM system_bans WHERE system_scope=? AND user_id=?").bind(business ? "business" : "bot", targetId).run();
+          await env.DB.prepare("DELETE FROM blocked_users WHERE user_id=?").bind(targetId).run();
+          await env.DB.prepare("UPDATE users SET is_blocked=0 WHERE user_id=?").bind(targetId).run();
           if (!business && msg.chat.type !== "private") {
             try { await tg(env, "unbanChatMember", { chat_id: chatId, user_id: Number(targetId), only_if_banned: true }); } catch (_) {}
           }
@@ -327,7 +315,7 @@ async function executeCommand(env, msg, business, actorId, command, deps) {
       case "warnings": {
         if (!(await requirePerm("moderation"))) return denied(), true;
         const id = targetId || actorId;
-        const rows = await env.DB.prepare("SELECT reason,issued_by,created_at FROM system_warnings WHERE system_scope=? AND user_id=? ORDER BY id DESC LIMIT 10").bind(business ? "business" : "bot",id).all();
+        const rows = await env.DB.prepare("SELECT reason,issued_by,created_at FROM warnings WHERE user_id=? ORDER BY id DESC LIMIT 10").bind(id).all();
         out = (rows.results || []).map(r => `${r.created_at}: ${r.reason} (بواسطة ${r.issued_by})`).join("\n") || "لا توجد تحذيرات.";
         break;
       }
@@ -337,13 +325,13 @@ async function executeCommand(env, msg, business, actorId, command, deps) {
       case "memory":
         out = `تُحفظ آخر ${HISTORY_LIMIT} رسالة لكل محادثة في D1، مع فصل محادثات Telegram Business عن المجموعات والمستخدمين.`; break;
       case "instructions": {
-        const rows = await env.DB.prepare("SELECT id,instruction FROM system_instructions WHERE system_scope=? AND active=1 ORDER BY id DESC LIMIT 15").bind(business ? "business" : "bot").all();
+        const rows = await env.DB.prepare("SELECT id,instruction FROM instructions WHERE active=1 ORDER BY id DESC LIMIT 15").all();
         out = (rows.results || []).map(r => `${r.id}. ${r.instruction}`).join("\n") || "لا توجد تعليمات إضافية."; break;
       }
       case "addinstruction": {
         if (!(await requirePerm("ai"))) return denied(), true;
         if (!args) { out = "استخدم: /addinstruction ثم نص التعليمة."; break; }
-        const r = await env.DB.prepare("INSERT INTO system_instructions(system_scope,instruction,created_by) VALUES(?,?,?)").bind(business ? "business" : "bot",args, actorId).run();
+        const r = await env.DB.prepare("INSERT INTO instructions(instruction,created_by) VALUES(?,?)").bind(args, actorId).run();
         await audit(env, actorId, "add_instruction", r.meta?.last_row_id || "", "", args);
         out = "تمت إضافة التعليمة. ستُستخدم في طلبات الذكاء الاصطناعي القادمة."; break;
       }
@@ -352,8 +340,8 @@ async function executeCommand(env, msg, business, actorId, command, deps) {
         if (!(await requirePerm("ai"))) return denied(), true;
         const [id, ...rest] = args.split(/\s+/);
         if (!/^\d+$/.test(id || "")) { out = `استخدم: /${name} رقم_التعليمة${name === "editinstruction" ? " النص الجديد" : ""}`; break; }
-        if (name === "delinstruction") await env.DB.prepare("UPDATE system_instructions SET active=0,updated_at=CURRENT_TIMESTAMP WHERE system_scope=? AND id=?").bind(business ? "business" : "bot",id).run();
-        else await env.DB.prepare("UPDATE system_instructions SET instruction=?,updated_at=CURRENT_TIMESTAMP WHERE system_scope=? AND id=?").bind(rest.join(" "),business ? "business" : "bot",id).run();
+        if (name === "delinstruction") await env.DB.prepare("UPDATE instructions SET active=0 WHERE id=?").bind(id).run();
+        else await env.DB.prepare("UPDATE instructions SET instruction=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(rest.join(" "), id).run();
         await audit(env, actorId, name, id);
         out = "تم تنفيذ العملية."; break;
       }
@@ -578,21 +566,27 @@ export const COMMAND_VERSION = "2.5.11-rbac1";
 
 // DAKI RBAC v1 — stable permission IDs; UI labels are localized separately.
 export const RBAC_ROLES = Object.freeze({
-  // Seven dashboard ranks: primary_owner is the immutable account owner;
-  // these six roles are the assignable ranks 2-7.
-  owner: { label: { ar: "نائب المالك (Co-Owner)", en: "Co-owner", de: "Mitinhaber", fr: "Copropriétaire" }, permissions: ["dashboard.access", "dashboard.overview", "users.read", "users.moderate", "users.erase", "users.kick", "users.mute", "messages.delete", "groups.read", "groups.manage", "groups.moderate", "ai.read", "ai.manage", "ai.toggle", "instructions.manage", "stats.read", "logs.read", "backup.create", "backup.restore", "admins.read", "admins.manage", "roles.manage", "commands.manage", "broadcast.send", "security.manage"] },
-  super_admin: { label: { ar: "مدير عام (Super Admin)", en: "Super admin", de: "Superadministrator", fr: "Super administrateur" }, permissions: ["dashboard.access", "dashboard.overview", "users.read", "users.moderate", "users.kick", "users.mute", "messages.delete", "groups.read", "groups.manage", "groups.moderate", "ai.read", "ai.toggle", "instructions.manage", "stats.read", "admins.read", "admins.manage", "roles.manage"] },
-  admin: { label: { ar: "مشرف متقدم (Senior Mod)", en: "Senior moderator", de: "Erfahrener Moderator", fr: "Modérateur senior" }, permissions: ["dashboard.access", "dashboard.overview", "users.read", "users.moderate", "users.kick", "users.mute", "messages.delete", "ai.read", "instructions.manage", "stats.read", "groups.read"] },
-  moderator: { label: { ar: "مشرف (Moderator)", en: "Moderator", de: "Moderator", fr: "Modérateur" }, permissions: ["dashboard.access", "dashboard.overview", "users.read", "users.mute", "users.kick", "messages.delete", "stats.read", "groups.read"] },
-  support: { label: { ar: "مساعد إداري (Helper)", en: "Helper", de: "Helfer", fr: "Assistant" }, permissions: ["dashboard.access", "dashboard.overview", "users.read", "users.mute", "stats.read"] },
-  watcher: { label: { ar: "مراقب / عضو مميز (Watcher)", en: "Watcher", de: "Beobachter", fr: "Observateur" }, permissions: ["dashboard.access", "dashboard.overview", "stats.read"] },
-  // Kept only so existing translator accounts retain their saved permission set.
-  // It is intentionally excluded from the new rank selector.
-  translator: { label: { ar: "مترجم (حساب سابق)", en: "Legacy translator", de: "Bisheriger Übersetzer", fr: "Ancien traducteur" }, permissions: ["dashboard.access", "dashboard.overview", "translations.manage"] }
+  owner: { label: { ar: "مالك مفوّض", en: "Delegated owner", de: "Beauftragter Eigentümer", fr: "Propriétaire délégué" }, permissions: ["dashboard.access", "dashboard.overview", "users.read", "users.moderate", "users.ban", "users.erase", "groups.read", "groups.manage", "groups.moderate", "groups.ban", "groups.mute", "groups.kick", "groups.messages.delete", "ai.read", "ai.manage", "ai.toggle", "stats.read", "logs.read", "backup.create", "backup.restore", "admins.read", "admins.manage", "roles.manage", "translations.manage", "security.manage", "commands.manage", "instructions.manage", "broadcast.send"] },
+  super_admin: { label: { ar: "مشرف عام", en: "Super admin", de: "Superadministrator", fr: "Super administrateur" }, permissions: ["dashboard.access", "dashboard.overview", "users.read", "users.moderate", "users.ban", "groups.read", "groups.manage", "groups.moderate", "groups.ban", "groups.mute", "groups.kick", "groups.messages.delete", "ai.read", "ai.manage", "ai.toggle", "instructions.manage", "admins.manage", "roles.manage", "stats.read", "logs.read"] },
+  admin: { label: { ar: "مشرف", en: "Administrator", de: "Administrator", fr: "Administrateur" }, permissions: ["dashboard.access", "dashboard.overview", "users.read", "users.moderate", "users.ban", "groups.read", "groups.moderate", "groups.ban", "groups.mute", "groups.kick", "groups.messages.delete", "ai.read", "instructions.manage", "stats.read"] },
+  moderator: { label: { ar: "مشرف مجموعات", en: "Moderator", de: "Moderator", fr: "Modérateur" }, permissions: ["dashboard.access", "dashboard.overview", "groups.read", "groups.moderate", "groups.mute", "groups.kick", "groups.messages.delete", "stats.read"] },
+  support: { label: { ar: "الدعم الفني", en: "Support", de: "Support", fr: "Assistance" }, permissions: ["dashboard.access", "dashboard.overview", "groups.read", "groups.mute", "stats.read", "users.read"] },
+  watcher: { label: { ar: "مراقب / عضو مميز", en: "Watcher", de: "Beobachter", fr: "Observateur" }, permissions: ["dashboard.access", "dashboard.overview", "stats.read"] },
+  translator: { label: { ar: "مترجم", en: "Translator", de: "Übersetzer", fr: "Traducteur" }, permissions: ["dashboard.access", "dashboard.overview", "translations.manage"] },
+  member: { label: { ar: "عضو", en: "Member", de: "Mitglied", fr: "Membre" }, permissions: [] },
+  restricted: { label: { ar: "مقيّد", en: "Restricted", de: "Eingeschränkt", fr: "Restreint" }, permissions: [] }
 });
-export const RBAC_ASSIGNABLE_ROLES = Object.freeze(Object.fromEntries(
-  ["owner", "super_admin", "admin", "moderator", "support", "watcher"].map(key => [key, RBAC_ROLES[key]])
-));
+// Seven assignable dashboard levels. The immutable primary owner is never assignable.
+// Watcher is an explicit alias of the read-only translator permission profile.
+export const RBAC_ASSIGNABLE_ROLES = Object.freeze({
+  owner: RBAC_ROLES.owner,
+  super_admin: RBAC_ROLES.super_admin,
+  admin: RBAC_ROLES.admin,
+  moderator: RBAC_ROLES.moderator,
+  support: RBAC_ROLES.support,
+  watcher: RBAC_ROLES.watcher
+});
+
 export const RBAC_PERMISSION_LABELS = Object.freeze({
   "dashboard.access": { ar: "دخول لوحة التحكم", en: "Dashboard access", de: "Dashboard-Zugriff", fr: "Accès au tableau de bord" },
   "dashboard.overview": { ar: "عرض النظرة العامة", en: "View overview", de: "Übersicht anzeigen", fr: "Voir l’aperçu" },
@@ -613,13 +607,15 @@ export const RBAC_PERMISSION_LABELS = Object.freeze({
   "roles.manage": { ar: "إدارة الرتب", en: "Manage roles", de: "Rollen verwalten", fr: "Gérer les rôles" },
   "translations.manage": { ar: "إدارة الترجمات", en: "Manage translations", de: "Übersetzungen verwalten", fr: "Gérer les traductions" },
   "security.manage": { ar: "إدارة الأمان", en: "Manage security", de: "Sicherheit verwalten", fr: "Gérer la sécurité" },
-  "users.kick": { ar: "طرد الأعضاء", en: "Kick users", de: "Benutzer entfernen", fr: "Expulser des utilisateurs" },
-  "users.mute": { ar: "كتم الأعضاء", en: "Mute users", de: "Benutzer stummschalten", fr: "Rendre muet" },
-  "messages.delete": { ar: "حذف الرسائل", en: "Delete messages", de: "Nachrichten löschen", fr: "Supprimer les messages" },
-  "commands.manage": { ar: "إدارة أوامر البوت", en: "Manage bot commands", de: "Bot-Befehle verwalten", fr: "Gérer les commandes du bot" },
+  "commands.manage": { ar: "إدارة الأوامر", en: "Manage commands", de: "Befehle verwalten", fr: "Gérer les commandes" },
   "instructions.manage": { ar: "إدارة التعليمات", en: "Manage instructions", de: "Anweisungen verwalten", fr: "Gérer les instructions" },
-  "broadcast.send": { ar: "إذاعة الرسائل", en: "Send broadcasts", de: "Nachrichten senden", fr: "Envoyer des diffusions" },
-  "ai.toggle": { ar: "تشغيل وإيقاف الذكاء الاصطناعي", en: "Toggle AI", de: "KI ein-/ausschalten", fr: "Activer/désactiver l’IA" }
+  "broadcast.send": { ar: "إرسال الإذاعات", en: "Send broadcasts", de: "Rundnachrichten senden", fr: "Envoyer des diffusions" },
+  "ai.toggle": { ar: "تشغيل وإيقاف الذكاء الاصطناعي", en: "Toggle AI", de: "KI ein-/ausschalten", fr: "Activer/désactiver l’IA" },
+  "users.ban": { ar: "حظر مستخدم من النظام", en: "Ban users from the assistant", de: "Benutzer sperren", fr: "Bannir des utilisateurs" },
+  "groups.ban": { ar: "حظر أعضاء المجموعات", en: "Ban group members", de: "Gruppenmitglieder sperren", fr: "Bannir des membres" },
+  "groups.mute": { ar: "كتم أعضاء المجموعات", en: "Mute group members", de: "Gruppenmitglieder stummschalten", fr: "Rendre muets les membres" },
+  "groups.kick": { ar: "طرد أعضاء المجموعات", en: "Kick group members", de: "Gruppenmitglieder entfernen", fr: "Expulser des membres" },
+  "groups.messages.delete": { ar: "حذف رسائل المجموعات", en: "Delete group messages", de: "Gruppennachrichten löschen", fr: "Supprimer les messages" }
 });
 export const RBAC_PERMISSION_IDS = Object.freeze(Object.keys(RBAC_PERMISSION_LABELS));
 export function rolePermissions(role) { return [...(RBAC_ROLES[role]?.permissions || [])]; }
