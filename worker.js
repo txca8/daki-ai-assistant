@@ -1,4 +1,4 @@
-import ADMIN_HTML from "./dashboard/admin-html.js";
+import { ADMIN_HTML } from "./dashboard/admin-html.js";
 import { ADMIN_CATEGORIES, ADMIN_COMMANDS, CHAT_ONLY_COMMANDS, WEB_COMMANDS, parseCommand, ensureTelegramCommands, createCommandSystem, RBAC_ASSIGNABLE_ROLES, RBAC_PERMISSION_IDS, rolePermissions, hasRbacPermission } from "./commands.js";
 import { GROUP_MODERATION_ACTIONS, validateGroupModerationInput } from "./moderation.js";
 
@@ -28,6 +28,7 @@ const CHANNEL_URL = "https://t.me/DakiSchule";
 const ADMIN_URL = "https://daki-ai-assistant.khtin157.workers.dev/admin";
 const OWNER_ID = "8684164437";
 const MODEL = "@cf/google/gemma-4-26b-a4b-it";
+const ALLOWED_AI_MODELS = Object.freeze([MODEL,"@cf/meta/llama-3.3-70b-instruct-fp8-fast"]);
 const MAX_TELEGRAM_TEXT = 4000;
 const HISTORY_LIMIT = 20;
 
@@ -157,6 +158,18 @@ const ADDITIONAL_SCHEMA = [
     user_id TEXT NOT NULL, window_started INTEGER NOT NULL, request_count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(system_scope,user_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS system_group_rate_limits (
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    chat_id TEXT NOT NULL, user_id TEXT NOT NULL, window_started INTEGER NOT NULL,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(system_scope,chat_id,user_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_group_settings (
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    chat_id TEXT NOT NULL, setting_key TEXT NOT NULL, setting_value TEXT NOT NULL,
+    updated_by TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(system_scope,chat_id,setting_key)
+  )`,
   `CREATE TABLE IF NOT EXISTS system_mutes (
     system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
     user_id TEXT NOT NULL, chat_id TEXT NOT NULL, until_ts INTEGER NOT NULL,
@@ -186,6 +199,44 @@ const ADDITIONAL_SCHEMA = [
     updated_by TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(system_scope,chat_id,command_name)
   )`,
+  `CREATE TABLE IF NOT EXISTS system_command_settings (
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    command_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+    updated_by TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(system_scope,command_name)
+  )`,
+  `CREATE TABLE IF NOT EXISTS role_permission_templates (
+    role TEXT PRIMARY KEY, permissions_json TEXT NOT NULL, updated_by TEXT,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_custom_commands (
+    system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    command_name TEXT NOT NULL, category TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+    response_text TEXT NOT NULL, min_rank INTEGER NOT NULL DEFAULT 5, enabled INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(system_scope,command_name)
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_group_bans (
+    system_scope TEXT NOT NULL CHECK(system_scope = 'bot'),
+    chat_id TEXT NOT NULL, user_id TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
+    banned_by TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(system_scope,chat_id,user_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_system_group_bans_user ON system_group_bans(system_scope,user_id)`,
+  `CREATE TABLE IF NOT EXISTS system_broadcast_jobs (
+    id TEXT PRIMARY KEY, system_scope TEXT NOT NULL CHECK(system_scope IN ('business','bot')),
+    message_text TEXT NOT NULL, created_by TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'preparing' CHECK(status IN ('preparing','running','completed','cancelled')),
+    total INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS system_broadcast_recipients (
+    job_id TEXT NOT NULL, chat_id TEXT NOT NULL, connection_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','sent','failed')),
+    error_text TEXT NOT NULL DEFAULT '', updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(job_id,chat_id,connection_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_pending ON system_broadcast_recipients(job_id,status,chat_id)`,
 ];
 
 
@@ -435,14 +486,14 @@ function parseAIResponse(result) {
   cleaned = cleaned.replace(/^\s*["']?reply["']?\s*:\s*/i, "").trim();
   return { reply: cleaned.slice(0, 18000), need_human: false };
 }
-async function runAIWithRetry(env, messages, temperature = undefined) {
+async function runAIWithRetry(env, messages, temperature = undefined, maxTokens = 2048, model = MODEL) {
   const attempts = 3;
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const options = { messages, max_tokens: 2048 };
+      const options = { messages, max_tokens: Math.max(128,Math.min(4096,Number(maxTokens)||2048)) };
       if (Number.isFinite(temperature)) options.temperature = Math.max(0, Math.min(2, temperature));
-      const result = await env.AI.run(MODEL, options);
+      const result = await env.AI.run(model, options);
       return parseAIResponse(result);
     } catch (error) {
       lastError = error;
@@ -590,7 +641,7 @@ const ADMIN_API_PERMISSION = Object.freeze({
   sessionInfo: "dashboard.access", commandsList: "dashboard.access", overview: "dashboard.overview",
   usersList: "users.read", userBlock: "users.moderate", userUnblock: "users.moderate", userForget: "users.erase",
   groupsList: "groups.read", groupUpdate: "groups.manage", groupCommandsGet: "groups.read", groupCommandSet: "groups.manage",
-  adminsList: "admins.read", adminAdd: "admins.manage", adminRemove: "admins.manage", adminPermissions: "roles.manage", adminRoleSet: "roles.manage",
+  adminsList: "admins.read", adminAdd: "admins.manage", adminRemove: "admins.manage", adminPermissions: "roles.manage", adminRoleSet: "roles.manage", roleTemplatesGet: "roles.manage", roleTemplateSet: "roles.manage",
   instructionsList: "security.manage", instructionAdd: "security.manage", instructionUpdate: "security.manage", instructionDelete: "security.manage",
   botProfileGet: "ai.read", botProfileSet: "ai.manage", botInstructionsList: "ai.read", botInstructionAdd: "ai.manage", botInstructionUpdate: "ai.manage", botInstructionDelete: "ai.manage",
   settingsGet: "security.manage", settingsSet: "security.manage",
@@ -598,9 +649,9 @@ const ADMIN_API_PERMISSION = Object.freeze({
   customList: "ai.read", saveCommand: "commands.manage", deleteCommand: "commands.manage", runCommand: "dashboard.access",
   systemConfigGet: "ai.read", systemConfigSet: "ai.read",
   systemInstructionsList: "ai.read", systemInstructionAdd: "instructions.manage", systemInstructionUpdate: "instructions.manage", systemInstructionDelete: "instructions.manage",
-  systemUsersList: "users.read", systemUserForget: "users.erase", systemUserBlock: "users.moderate", systemUserUnblock: "users.moderate",
-  systemGroupsList: "groups.read", systemGroupSet: "groups.manage", systemGroupModerate: "dashboard.access",
-  systemRulesList: "security.manage", systemRuleAdd: "commands.manage", systemRuleDelete: "commands.manage",
+  systemUsersList: "users.read", systemUserForget: "users.erase", systemUserBlock: "users.ban", systemUserUnblock: "users.ban",
+  systemGroupsList: "groups.read", systemGroupSet: "groups.manage", systemGroupConfigGet: "groups.read", systemGroupConfigSet: "groups.manage", systemGroupModerate: "dashboard.access",
+  systemRulesList: "security.manage", systemRuleAdd: "commands.manage", systemRuleDelete: "commands.manage", systemCommandSet: "commands.manage", systemCustomCommandAdd: "commands.manage", systemCustomCommandDelete: "commands.manage", systemCustomCommandSet: "commands.manage", systemCustomCommandsList: "ai.read",
   systemBroadcastStart: "broadcast.send", systemBroadcastBatch: "broadcast.send", systemBroadcastStatus: "broadcast.send", systemBroadcastCancel: "broadcast.send"
 });
 async function adminVisibleCommands(env, actorId) {
@@ -620,6 +671,17 @@ async function getBroadcastStatus(env, jobId, scope) {
   if (!job) return json({ok:false,error:"Broadcast job not found"},404);
   const pending = await env.DB.prepare("SELECT COUNT(*) AS n FROM system_broadcast_recipients WHERE job_id=? AND status IN ('pending','sending')").bind(jobId).first();
   return json({ok:true,job:{...job,remaining:Number(pending?.n || 0)}});
+}
+
+async function loadRolePermissions(env, role) {
+  const row = await env.DB.prepare("SELECT permissions_json FROM role_permission_templates WHERE role=?").bind(role).first();
+  if (row?.permissions_json) {
+    try {
+      const parsed = JSON.parse(row.permissions_json);
+      if (Array.isArray(parsed)) return parsed.filter(permission => RBAC_PERMISSION_IDS.includes(permission));
+    } catch (_) {}
+  }
+  return rolePermissions(role);
 }
 
 async function handleAdminApi(request, env) {
@@ -648,8 +710,10 @@ async function handleAdminApi(request, env) {
   const configKeys = new Set([
     "private_auto_reply","group_auto_reply","handoff_enabled","handoff_pause_hours","tone","reply_length","typing_delay",
     "stop_on_manual_reply","working_hours","schedule_start","schedule_end","away_message","bot_name","thinking_style",
-    "temperature","auto_read_messages","reply_to_voice_notes","ignore_bots_channels","auto_archive_muted","rate_limit_per_user","schedule_timezone",
-    "block_links","ignore_stickers","system_prompt","personality","language","detail","topic","extra_rules","maintenance"
+    "temperature","auto_read_messages","reply_to_voice_notes","ignore_bots_channels","auto_archive_muted","rate_limit_per_user","max_tokens","model","schedule_timezone",
+    "block_links","ignore_stickers","system_prompt","personality","language","detail","topic","extra_rules","maintenance","maintenance_message",
+    "anti_spam","flood_limit_per_minute","flood_mute_minutes","force_sub_enabled","force_sub_channel",
+    "welcome_enabled","welcome_text","auto_delete_service_messages","logs_channel_id","log_events_enabled"
   ]);
   if (action === "systemConfigGet") {
     const rows = await env.DB.prepare("SELECT config_key,config_value FROM system_config WHERE system_scope=?").bind(scope).all();
@@ -679,7 +743,16 @@ async function handleAdminApi(request, env) {
       if (key === "typing_delay" && (!Number.isFinite(Number(value)) || Number(value)<0 || Number(value)>8)) return json({ok:false,error:"تأخير الكتابة يجب أن يكون بين 0 و8 ثوانٍ"},400);
       if (key === "handoff_pause_hours" && (!Number.isFinite(Number(value)) || Number(value)<1 || Number(value)>72)) return json({ok:false,error:"مدة التوقف يجب أن تكون بين 1 و72 ساعة"},400);
       if (key === "rate_limit_per_user" && (!Number.isInteger(Number(value)) || Number(value)<0 || Number(value)>1000)) return json({ok:false,error:"الحد يجب أن يكون عدداً صحيحاً بين 0 و1000"},400);
+      if (key === "max_tokens" && (!Number.isInteger(Number(value)) || Number(value)<128 || Number(value)>4096)) return json({ok:false,error:"حد التوكنز يجب أن يكون بين 128 و4096"},400);
+      if (key === "model" && !ALLOWED_AI_MODELS.includes(value)) return json({ok:false,error:"نموذج Workers AI غير موجود في قائمة النماذج المعتمدة."},400);
       if (key === "temperature" && (!Number.isFinite(Number(value)) || Number(value)<0 || Number(value)>2)) return json({ok:false,error:"درجة الإبداع يجب أن تكون بين 0 و2"},400);
+      if (["anti_spam","force_sub_enabled","welcome_enabled","auto_delete_service_messages","log_events_enabled","ignore_bots_channels"].includes(key) && !["0","1"].includes(value)) return json({ok:false,error:"قيمة المفتاح يجب أن تكون مفعّلة أو معطّلة."},400);
+      if (key === "flood_limit_per_minute" && (!Number.isInteger(Number(value)) || Number(value)<1 || Number(value)>120)) return json({ok:false,error:"حد الرسائل يجب أن يكون بين 1 و120 في الدقيقة."},400);
+      if (key === "flood_mute_minutes" && (!Number.isInteger(Number(value)) || Number(value)<1 || Number(value)>1440)) return json({ok:false,error:"مدة الكتم يجب أن تكون بين دقيقة و24 ساعة."},400);
+      if (key === "force_sub_channel" && value && !/^@[A-Za-z0-9_]{5,32}$/.test(value) && !/^-100\d{5,20}$/.test(value)) return json({ok:false,error:"استخدم اسم قناة يبدأ بـ @ أو معرّف قناة رقمي."},400);
+      if (key === "logs_channel_id" && value && !/^@[A-Za-z0-9_]{5,32}$/.test(value) && !/^-100\d{5,20}$/.test(value)) return json({ok:false,error:"استخدم @username أو معرّف قناة يبدأ بـ -100."},400);
+      if (key === "force_sub_enabled" && value === "1") { const channel = await env.DB.prepare("SELECT config_value FROM system_config WHERE system_scope=? AND config_key='force_sub_channel'").bind(scope).first(); if (!channel?.config_value) return json({ok:false,error:"أدخل معرّف قناة الاشتراك قبل تفعيل الاشتراك الإجباري."},400); }
+      if (key === "log_events_enabled" && value === "1") { const channel = await env.DB.prepare("SELECT config_value FROM system_config WHERE system_scope='bot' AND config_key='logs_channel_id'").first(); if (!channel?.config_value) return json({ok:false,error:"أدخل معرّف قناة السجلات قبل تفعيل التوجيه."},400); }
       await env.DB.prepare(`INSERT INTO system_config(system_scope,config_key,config_value,updated_by) VALUES(?,?,?,?)
         ON CONFLICT(system_scope,config_key) DO UPDATE SET config_value=excluded.config_value,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`)
         .bind(scope,key,value,actorId).run();
@@ -723,6 +796,7 @@ async function handleAdminApi(request, env) {
     await env.DB.prepare("DELETE FROM system_learning_profiles WHERE system_scope=? AND user_id=?").bind(scope,id).run();
     await env.DB.prepare("DELETE FROM system_usage_stats WHERE system_scope=? AND user_id=?").bind(scope,id).run();
     await env.DB.prepare("DELETE FROM system_rate_limits WHERE system_scope=? AND user_id=?").bind(scope,id).run();
+    await env.DB.prepare("DELETE FROM system_group_rate_limits WHERE system_scope=? AND user_id=?").bind(scope,id).run();
     await env.DB.prepare("DELETE FROM system_mutes WHERE system_scope=? AND user_id=?").bind(scope,id).run();
     await env.DB.prepare("DELETE FROM system_warnings WHERE system_scope=? AND user_id=?").bind(scope,id).run();
     if (scope === "bot") await env.DB.prepare("DELETE FROM welcome_events WHERE user_id=? AND connection_id='|welcome-bot-admin-v1'").bind(id).run();
@@ -753,7 +827,28 @@ async function handleAdminApi(request, env) {
   }
   if (action === "systemGroupsList") {
     const rows = await env.DB.prepare("SELECT chat_id,title,enabled,mode FROM system_groups WHERE system_scope=? ORDER BY title LIMIT 300").bind(scope).all();
-    return json({ ok: true, groups: rows.results || [] });
+    const settingsRows = await env.DB.prepare("SELECT chat_id,setting_key,setting_value FROM system_group_settings WHERE system_scope=?").bind(scope).all();
+    const settings = new Map();
+    for (const row of settingsRows.results || []) { const item=settings.get(String(row.chat_id)) || {}; item[row.setting_key]=String(row.setting_value); settings.set(String(row.chat_id),item); }
+    return json({ ok: true, groups: (rows.results || []).map(group=>({...group,settings:settings.get(String(group.chat_id)) || {}})) });
+  }
+  if (action === "systemGroupConfigGet") {
+    const id=String(body.chat_id || '').trim(); if (!/^-\d+$/.test(id)) return json({ok:false,error:'معرّف المجموعة غير صالح.'},400);
+    return json({ok:true,settings:await loadSystemGroupConfig(env,scope,id)});
+  }
+  if (action === "systemGroupConfigSet") {
+    const id=String(body.chat_id || '').trim(), key=String(body.key || ''), value=body.value;
+    const allowed=new Set(['block_links','welcome_enabled','welcome_text','anti_spam','flood_limit_per_minute','flood_mute_minutes','auto_delete_service_messages']);
+    if (!/^-\d+$/.test(id) || !allowed.has(key) || (scope==='business' && key!=='block_links')) return json({ok:false,error:'إعداد المجموعة غير صالح أو غير مدعوم لهذا النطاق.'},400);
+    let stored;
+    if (['block_links','welcome_enabled','anti_spam','auto_delete_service_messages'].includes(key)) stored=(value===true||value===1||value==='1')?'1':'0';
+    else if (['flood_limit_per_minute','flood_mute_minutes'].includes(key)) { const n=Number(value), max=key==='flood_limit_per_minute'?120:1440; if(!Number.isInteger(n)||n<1||n>max)return json({ok:false,error:'قيمة الحد أو المدة غير صالحة.'},400); stored=String(n); }
+    else stored=safeString(value,1000);
+    await env.DB.prepare(`INSERT INTO system_group_settings(system_scope,chat_id,setting_key,setting_value,updated_by) VALUES(?,?,?,?,?)
+      ON CONFLICT(system_scope,chat_id,setting_key) DO UPDATE SET setting_value=excluded.setting_value,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`)
+      .bind(scope,id,key,stored,actorId).run();
+    await audit(env,actorId,'group_setting_update',id,key,stored);
+    return json({ok:true,chat_id:id,key,value:stored});
   }
   if (action === "systemGroupSet") {
     const id = String(body.chat_id || "");
@@ -768,7 +863,7 @@ async function handleAdminApi(request, env) {
   }
   if (action === "systemGroupModerate") {
     if (scope !== "bot") return json({ ok:false, error:"Group moderation is available only for Telegram Bot groups" },400);
-    const input = validateGroupModerationInput({ ...body, ownerId: OWNER_ID });
+    const input = validateGroupModerationInput({ ...body, action: body.moderation_action, ownerId: OWNER_ID });
     if (!input.ok) return json({ ok:false, error:input.error },400);
     const required = GROUP_MODERATION_ACTIONS[input.action].permission;
     if (!(await hasPermission(env, actorId, required))) return json({ ok:false,error:"ليس لديك الإذن اللازم لهذا الإجراء." },403);
@@ -900,7 +995,7 @@ async function handleAdminApi(request, env) {
   }
   const backupTables = ["users","conversations","messages","learning_profiles","recurring_mistakes",
     "admins","admin_custom_commands","blocked_users","warnings","groups","bot_settings","instructions",
-    "audit_logs","alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state","bot_profile_settings","bot_instructions","group_command_settings","system_config","system_instructions","system_bans","system_users","system_groups","system_rules","system_rate_limits","system_mutes","system_usage_stats","system_learning_profiles","system_warnings","system_group_command_settings","system_group_bans","system_broadcast_jobs","system_broadcast_recipients"];
+    "audit_logs","alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state","bot_profile_settings","bot_instructions","group_command_settings","system_config","system_instructions","system_bans","system_users","system_groups","system_rules","system_rate_limits","system_group_rate_limits","system_group_settings","system_mutes","system_usage_stats","system_learning_profiles","system_warnings","system_group_command_settings","system_command_settings","role_permission_templates","system_custom_commands","system_group_bans","system_broadcast_jobs","system_broadcast_recipients"];
   try {
     if (action === "sessionInfo") {
       const primaryOwner = await isOwner(env, actorId);
@@ -909,7 +1004,12 @@ async function handleAdminApi(request, env) {
       return json({ ok: true, session: { user_id: actorId, is_owner: primaryOwner, role: primaryOwner ? "primary_owner" : (admin?.role || "member"), permissions }, roles: RBAC_ASSIGNABLE_ROLES, permission_ids: RBAC_PERMISSION_IDS });
     }
     if (action === "commandsList") {
-      return json({ ok: true, commands: await adminVisibleCommands(env, actorId) });
+      const commands = await adminVisibleCommands(env, actorId);
+      const rows = await env.DB.prepare("SELECT command_name,enabled FROM system_command_settings WHERE system_scope='bot'").all();
+      const disabled = new Set((rows.results || []).filter(row => Number(row.enabled) === 0).map(row => row.command_name));
+      const customRows = await env.DB.prepare("SELECT command_name,category,description,min_rank,enabled FROM system_custom_commands WHERE system_scope='bot' ORDER BY command_name").all();
+      const custom = (customRows.results || []).map(row => ({name:row.command_name,labels:{ar:row.category || 'أمر مخصص'},description:row.description,permission:'commands.manage',ownerOnly:false,web_enabled:false,custom:true,min_rank:Number(row.min_rank),enabled:Number(row.enabled)!==0 && !disabled.has(row.command_name)}));
+      return json({ ok: true, commands: [...commands.map(command => ({ ...command, enabled: !disabled.has(command.name) })),...custom] });
     }
     if (action === "overview") {
       const count = async sql => { try { const row = await env.DB.prepare(sql).first(); return Number(row?.n || 0); } catch (_) { return 0; } };
@@ -963,16 +1063,70 @@ async function handleAdminApi(request, env) {
       if (!group) return json({ ok: false, error: "المجموعة غير مسجلة." }, 404);
       const rows = await env.DB.prepare("SELECT command_name,enabled FROM system_group_command_settings WHERE system_scope=? AND chat_id=?").bind(scope,id).all();
       const disabled = new Set((rows.results || []).filter(row => Number(row.enabled) === 0).map(row => row.command_name));
-      return json({ ok: true, commands: ADMIN_COMMANDS.filter(command => !command.ownerOnly).map(command => ({ name: command.name, label: command.labels?.ar || command.name, description: command.description || "", enabled: !disabled.has(command.name) })) });
+      const customRows = await env.DB.prepare("SELECT command_name,category,description,enabled FROM system_custom_commands WHERE system_scope=? AND (?='bot' OR category='group') ORDER BY command_name").bind(scope,scope).all();
+      const fixed = ADMIN_COMMANDS.filter(command => !command.ownerOnly).map(command => ({ name: command.name, label: command.labels?.ar || command.name, description: command.description || "", enabled: !disabled.has(command.name) }));
+      const custom = (customRows.results || []).map(row => ({name:row.command_name,label:row.category || row.command_name,description:row.description || '',enabled:Number(row.enabled)!==0 && !disabled.has(row.command_name)}));
+      return json({ ok: true, commands: [...fixed,...custom] });
     }
     if (action === "groupCommandSet") {
       const id = String(body.chat_id || "").trim(), name = String(body.command_name || "").trim().toLowerCase();
-      if (!/^-\d+$/.test(id) || !ADMIN_COMMANDS.some(command => command.name === name && !command.ownerOnly) || typeof body.enabled !== "boolean") return json({ ok: false, error: "إعداد الأمر غير صالح." }, 400);
+      const customExists = await env.DB.prepare("SELECT command_name FROM system_custom_commands WHERE system_scope=? AND command_name=?").bind(scope,name).first();
+      if (!/^-\d+$/.test(id) || (!ADMIN_COMMANDS.some(command => command.name === name && !command.ownerOnly) && !customExists) || typeof body.enabled !== "boolean") return json({ ok: false, error: "إعداد الأمر غير صالح." }, 400);
       await env.DB.prepare(`INSERT INTO system_group_command_settings(system_scope,chat_id,command_name,enabled,updated_by)
         VALUES(?,?,?,?,?) ON CONFLICT(system_scope,chat_id,command_name) DO UPDATE SET enabled=excluded.enabled,
         updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`).bind(scope,id,name,body.enabled ? 1 : 0,actorId).run();
       await audit(env, actorId, "group_command_toggle", id, "", `${name}=${body.enabled ? "on" : "off"}`);
       return json({ ok: true });
+    }
+    if (action === "systemCustomCommandsList") {
+      const rows = await env.DB.prepare("SELECT command_name,category,description,response_text,min_rank,enabled,updated_at FROM system_custom_commands WHERE system_scope=? ORDER BY command_name").bind(scope).all();
+      return json({ok:true,commands:(rows.results || []).map(row=>({...row,enabled:Number(row.enabled)!==0,min_rank:Number(row.min_rank||0)}))});
+    }
+    if (action === "systemCustomCommandAdd") {
+      const rawName = safeString(body.command_name || "",100).trim();
+      const name = scope === "bot" ? rawName.toLowerCase().replace(/^\//, "") : rawName;
+      const category = safeString(body.category || "",100).trim();
+      const description = safeString(body.description || "",300).trim();
+      const response = safeString(body.response_text || "",4000).trim();
+      const minRank = scope === "bot" ? Number(body.min_rank || 5) : 0;
+      const validName = scope === "bot" ? /^[a-z][a-z0-9_]{1,31}$/.test(name) && !ADMIN_COMMANDS.some(command => command.name === name) : name.length >= 2 && name.length <= 80 && !/[\r\n]/.test(name);
+      if (!['bot','business'].includes(scope) || !validName || !response || (scope === "bot" && ![1,3,4,5].includes(minRank)) || (scope === "business" && !['dm','tools'].includes(category))) return json({ok:false,error:"بيانات الأمر أو المشغّل غير صالحة."},400);
+      await env.DB.prepare(`INSERT INTO system_custom_commands(system_scope,command_name,category,description,response_text,min_rank,enabled,created_by)
+        VALUES(?,?,?,?,?,?,1,?) ON CONFLICT(system_scope,command_name) DO UPDATE SET category=excluded.category,description=excluded.description,response_text=excluded.response_text,min_rank=excluded.min_rank,enabled=1,updated_at=CURRENT_TIMESTAMP`)
+        .bind(scope,name,category,description,response,minRank,actorId).run();
+      await audit(env,actorId,scope === 'bot' ? "custom_bot_command_add" : "custom_business_rule_add",name,"",`min_rank=${minRank}`);
+      return json({ok:true,command_name:name});
+    }
+    if (action === "systemCustomCommandDelete") {
+      const name = safeString(body.command_name || "",100).trim();
+      if (!['bot','business'].includes(scope) || !name) return json({ok:false,error:"اسم الأمر غير صالح."},400);
+      await env.DB.prepare("DELETE FROM system_custom_commands WHERE system_scope=? AND command_name=?").bind(scope,name).run();
+      if (scope === 'bot') {
+        await env.DB.prepare("DELETE FROM system_command_settings WHERE system_scope='bot' AND command_name=?").bind(name).run();
+        await env.DB.prepare("DELETE FROM system_group_command_settings WHERE system_scope='bot' AND command_name=?").bind(name).run();
+      }
+      await audit(env,actorId,scope === 'bot' ? "custom_bot_command_delete" : "custom_business_rule_delete",name);
+      return json({ok:true});
+    }
+    if (action === "systemCustomCommandSet") {
+      const name = safeString(body.command_name || "",100).trim();
+      if (!['bot','business'].includes(scope) || !name || typeof body.enabled !== "boolean") return json({ok:false,error:"إعداد الأمر المخصص غير صالح."},400);
+      const exists = await env.DB.prepare("SELECT command_name FROM system_custom_commands WHERE system_scope=? AND command_name=?").bind(scope,name).first();
+      if (!exists) return json({ok:false,error:"الأمر المخصص غير موجود."},404);
+      await env.DB.prepare("UPDATE system_custom_commands SET enabled=?,updated_at=CURRENT_TIMESTAMP WHERE system_scope=? AND command_name=?").bind(body.enabled?1:0,scope,name).run();
+      if (scope === 'bot') await env.DB.prepare("DELETE FROM system_command_settings WHERE system_scope='bot' AND command_name=?").bind(name).run();
+      await audit(env,actorId,scope === 'bot' ? "custom_bot_command_toggle" : "custom_business_rule_toggle",name,"",body.enabled?"on":"off");
+      return json({ok:true,command_name:name,enabled:body.enabled});
+    }
+    if (action === "systemCommandSet") {
+      const name = String(body.command_name || "").trim().toLowerCase();
+      const customExists = await env.DB.prepare("SELECT command_name FROM system_custom_commands WHERE system_scope='bot' AND command_name=?").bind(name).first();
+      if (scope !== "bot" || (!ADMIN_COMMANDS.some(command => command.name === name && !command.ownerOnly) && !customExists) || typeof body.enabled !== "boolean") return json({ ok:false,error:"إعداد الأمر العام غير صالح." },400);
+      await env.DB.prepare(`INSERT INTO system_command_settings(system_scope,command_name,enabled,updated_by) VALUES('bot',?,?,?)
+        ON CONFLICT(system_scope,command_name) DO UPDATE SET enabled=excluded.enabled,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`)
+        .bind(name,body.enabled ? 1 : 0,actorId).run();
+      await audit(env,actorId,"system_command_toggle","bot",name,body.enabled ? "on" : "off");
+      return json({ok:true,command_name:name,enabled:body.enabled});
     }
     if (action === "groupsList") {
       const rows = await env.DB.prepare("SELECT chat_id,title,enabled,mode FROM groups ORDER BY title LIMIT 200").all();
@@ -981,7 +1135,7 @@ async function handleAdminApi(request, env) {
     if (action === "groupUpdate") {
       const id = String(body.chat_id || "").trim();
       if (!/^-?\d+$/.test(id)) return json({ ok: false, error: "معرّف المجموعة غير صالح." }, 400);
-      const mode = body.mode === "all" ? "all" : body.mode === "mention" ? "mention" : null;
+      const mode = body.mode === "all" ? "all" : body.mode === "mention" ? "mention" : body.mode === "commands_only" ? "commands_only" : null;
       if (mode) await env.DB.prepare("UPDATE groups SET mode=? WHERE chat_id=?").bind(mode, id).run();
       if (typeof body.enabled === "boolean") await env.DB.prepare("UPDATE groups SET enabled=? WHERE chat_id=?").bind(body.enabled ? 1 : 0, id).run();
       await audit(env, actorId, "group_update", id, "", JSON.stringify({ mode, enabled: body.enabled }));
@@ -999,6 +1153,27 @@ async function handleAdminApi(request, env) {
       }
       return json({ ok: true, admins, roles: RBAC_ASSIGNABLE_ROLES, permission_ids: RBAC_PERMISSION_IDS });
     }
+    if (action === "roleTemplatesGet") {
+      const rows = await env.DB.prepare("SELECT role,permissions_json,updated_at FROM role_permission_templates").all();
+      const templates = Object.fromEntries(Object.entries(RBAC_ASSIGNABLE_ROLES).map(([role]) => [role, rolePermissions(role)]));
+      for (const row of rows.results || []) {
+        if (!Object.prototype.hasOwnProperty.call(templates,row.role)) continue;
+        try { const values = JSON.parse(row.permissions_json || "[]"); if (Array.isArray(values)) templates[row.role] = [...new Set(values.filter(value => RBAC_PERMISSION_IDS.includes(value)))]; } catch (_) {}
+      }
+      return json({ok:true,templates,permission_ids:RBAC_PERMISSION_IDS});
+    }
+    if (action === "roleTemplateSet") {
+      const role = String(body.role || "");
+      const permissions = Array.isArray(body.permissions) ? [...new Set(body.permissions)] : null;
+      if (!Object.prototype.hasOwnProperty.call(RBAC_ASSIGNABLE_ROLES,role) || !permissions || permissions.some(value => !RBAC_PERMISSION_IDS.includes(value))) return json({ok:false,error:"قالب الرتبة أو الصلاحيات غير صالح."},400);
+      if (role === "owner" && actorId !== OWNER_ID) return json({ok:false,error:"تعديل قالب المالك المفوض متاح للمالك الرئيسي فقط."},403);
+      for (const permission of permissions) if (!(await hasPermission(env,actorId,permission))) return json({ok:false,error:"لا يمكنك منح صلاحية لا تملكها."},403);
+      await env.DB.prepare(`INSERT INTO role_permission_templates(role,permissions_json,updated_by) VALUES(?,?,?)
+        ON CONFLICT(role) DO UPDATE SET permissions_json=excluded.permissions_json,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`)
+        .bind(role,JSON.stringify(permissions),actorId).run();
+      await audit(env,actorId,"role_template_update",role,"",JSON.stringify(permissions));
+      return json({ok:true,role,permissions});
+    }
     if (action === "adminAdd") {
       const id = String(body.user_id || "").trim();
       if (!/^\d+$/.test(id) || id === OWNER_ID) return json({ ok: false, error: "معرّف المشرف غير صالح." }, 400);
@@ -1010,7 +1185,7 @@ async function handleAdminApi(request, env) {
         const actor = await getAdmin(env, actorId);
         if (!actor || (ADMIN_ROLE_RANK[role] ?? 0) >= (ADMIN_ROLE_RANK[actor.role] ?? 0)) return json({ ok: false, error: "لا يمكنك منح رتبة مساوية لرتبتك أو أعلى منها." }, 403);
       }
-      const permissions = rolePermissions(role);
+      const permissions = await loadRolePermissions(env, role);
       for (const permission of permissions) if (!(await hasPermission(env, actorId, permission))) return json({ ok: false, error: "لا يمكنك منح صلاحيات لا تملكها." }, 403);
       await env.DB.prepare("INSERT INTO admins(user_id,role,permissions_json,added_by) VALUES(?,?,?,?)")
         .bind(id, role, JSON.stringify(permissions), actorId).run();
@@ -1029,7 +1204,7 @@ async function handleAdminApi(request, env) {
         const actor = await getAdmin(env, actorId);
         if ((ADMIN_ROLE_RANK[role] ?? 0) >= (ADMIN_ROLE_RANK[actor?.role] ?? 0)) return json({ ok: false, error: "لا يمكنك منح رتبة مساوية لرتبتك أو أعلى منها." }, 403);
       }
-      const permissions = rolePermissions(role);
+      const permissions = await loadRolePermissions(env, role);
       for (const permission of permissions) if (!(await hasPermission(env, actorId, permission))) return json({ ok: false, error: "الرتبة تتضمن صلاحيات لا تملك حق منحها." }, 403);
       await env.DB.prepare("UPDATE admins SET role=?,permissions_json=? WHERE user_id=?").bind(role, JSON.stringify(permissions), id).run();
       await audit(env, actorId, "admin_role_update", id, "", role);
@@ -1229,6 +1404,11 @@ async function logError(env, type, error, details = "") {
     if (owner === "1" && env.TELEGRAM_BOT_TOKEN) {
       await sendMessage(env, OWNER_ID, `DAKI alert\n${escapeHtml(type)}: ${escapeHtml(msg)}`);
     }
+    const logConfig = await loadSystemConfig(env,"bot");
+    if (logConfig.log_events_enabled === "1" && logConfig.logs_channel_id && env.TELEGRAM_BOT_TOKEN) {
+      try { await sendMessage(env,logConfig.logs_channel_id,`DAKI ERROR\n${safeString(type,100)}: ${safeString(msg,700)}\n${safeString(details,700)}`); }
+      catch (channelError) { console.error("log channel delivery failed:",channelError.message); }
+    }
   } catch (e) { console.error("error logging/alert failed:", e.message); }
 }
 async function getSetting(env, key, fallback = "") {
@@ -1247,6 +1427,12 @@ async function audit(env, actor, action, target = "", reason = "", details = "")
   await env.DB.prepare(
     "INSERT INTO audit_logs(actor_id,action,target_id,reason,details) VALUES(?,?,?,?,?)"
   ).bind(String(actor), action, String(target), safeString(reason, 500), safeString(details, 1500)).run();
+  try {
+    const config = await loadSystemConfig(env,"bot");
+    if (config.log_events_enabled === "1" && config.logs_channel_id && env.TELEGRAM_BOT_TOKEN) {
+      await sendMessage(env,config.logs_channel_id,`DAKI AUDIT\n${safeString(action,100)}\nActor: ${safeString(actor,40)}\nTarget: ${safeString(target,100)}\n${safeString(reason,300)} ${safeString(details,500)}`);
+    }
+  } catch (error) { console.error("audit channel delivery failed:",error.message); }
 }
 async function isBlocked(env, userId) {
   const row = await env.DB.prepare(
@@ -1333,6 +1519,12 @@ async function loadInstructions(env) {
   ).all();
   return (rows.results || []).map(x => x.instruction).join("\n");
 }
+async function loadSystemGroupConfig(env, scope, chatId) {
+  const rows = await env.DB.prepare("SELECT setting_key,setting_value FROM system_group_settings WHERE system_scope=? AND chat_id=?")
+    .bind(scope,String(chatId)).all();
+  return Object.fromEntries((rows.results || []).map(row=>[row.setting_key,String(row.setting_value)]));
+}
+
 async function loadSystemConfig(env, scope) {
   const rows = await env.DB.prepare("SELECT config_key,config_value FROM system_config WHERE system_scope=?").bind(scope).all();
   return Object.fromEntries((rows.results || []).map(row => [row.config_key,row.config_value]));
@@ -1345,11 +1537,12 @@ async function isSystemBanned(env, scope, userId) {
   const row = await env.DB.prepare("SELECT user_id FROM system_bans WHERE system_scope=? AND user_id=?").bind(scope,String(userId)).first();
   return !!row;
 }
-async function isSystemContentBlocked(env, scope, text) {
+async function isSystemContentBlocked(env, scope, text, groupConfig = null) {
   const rows = await env.DB.prepare("SELECT rule_type,rule_value FROM system_rules WHERE system_scope=? AND enabled=1").bind(scope).all();
   const source = String(text || "").toLocaleLowerCase();
   const config = await loadSystemConfig(env, scope);
-  if (config.block_links === "1" && /(?:https?:\/\/|www\.|t\.me\/)/i.test(source)) return true;
+  const blockLinks = groupConfig && Object.prototype.hasOwnProperty.call(groupConfig,"block_links") ? groupConfig.block_links === "1" : config.block_links === "1";
+  if (blockLinks && /(?:https?:\/\/|www\.|t\.me\/)/i.test(source)) return true;
   for (const rule of rows.results || []) {
     const value = String(rule.rule_value || "").toLocaleLowerCase().trim();
     if (!value) continue;
@@ -1418,7 +1611,7 @@ async function aiReply(env, conversationId, userId, userText, business = false) 
     { role: "system", content: system },
     ...history,
     { role: "user", content: userText }
-  ], Number.isFinite(temperature) ? temperature : undefined);
+  ], Number.isFinite(temperature) ? temperature : undefined, Number(config.max_tokens || 2048), ALLOWED_AI_MODELS.includes(config.model) ? config.model : MODEL);
   await saveMessage(env, conversationId, "user", userText);
   await saveMessage(env, conversationId, "assistant", parsed.reply);
   await updateLearning(env, business ? "business" : "bot", userId, userText, parsed.reply);
@@ -1482,8 +1675,22 @@ async function isGroupAllowed(env, chatId, textMessage, replyTo, business = fals
   const scope = business ? "business" : "bot";
   const row = await env.DB.prepare("SELECT enabled,mode FROM system_groups WHERE system_scope=? AND chat_id=?")
     .bind(scope,String(chatId)).first();
-  if (row?.enabled === 0) return false;
+  if (Number(row?.enabled) === 0) return false;
   if (row?.mode === "all") return true;
+  if (row?.mode === "commands_only") {
+    const parsed = parseCommand(textMessage,BOT_USERNAME);
+    if (!parsed) return false;
+    const builtIn = ADMIN_COMMANDS.some(command=>command.name===parsed.name && !command.ownerOnly);
+    const custom = builtIn ? null : await env.DB.prepare("SELECT enabled FROM system_custom_commands WHERE system_scope=? AND command_name=?")
+      .bind(scope,parsed.name).first();
+    if (!builtIn && (!custom || Number(custom.enabled)===0)) return false;
+    const globalSetting = await env.DB.prepare("SELECT enabled FROM system_command_settings WHERE system_scope=? AND command_name=?")
+      .bind(scope,parsed.name).first();
+    if (globalSetting && Number(globalSetting.enabled)===0) return false;
+    const groupSetting = await env.DB.prepare("SELECT enabled FROM system_group_command_settings WHERE system_scope=? AND chat_id=? AND command_name=?")
+      .bind(scope,String(chatId),parsed.name).first();
+    return !groupSetting || Number(groupSetting.enabled)!==0;
+  }
   const mention = new RegExp(`@${OWNER_USERNAME}\\b`, "i").test(textMessage || "");
   const replyUsername = String(replyTo?.from?.username || replyTo?.sender_chat?.username || "").replace(/^@/, "").toLowerCase();
   const reply = replyUsername === OWNER_USERNAME.toLowerCase();
@@ -1553,7 +1760,7 @@ async function editPanel(env, query, category) {
 async function sendBackup(env, chatId) {
   const tables = ["users","conversations","messages","learning_profiles","recurring_mistakes",
     "admins","admin_custom_commands","blocked_users","warnings","groups","bot_settings","instructions","audit_logs",
-    "alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state","bot_profile_settings","bot_instructions","group_command_settings","system_config","system_instructions","system_bans","system_users","system_groups","system_rules","system_rate_limits","system_mutes","system_usage_stats","system_learning_profiles","system_warnings","system_group_command_settings","system_group_bans","system_broadcast_jobs","system_broadcast_recipients"];
+    "alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state","bot_profile_settings","bot_instructions","group_command_settings","system_config","system_instructions","system_bans","system_users","system_groups","system_rules","system_rate_limits","system_group_rate_limits","system_group_settings","system_mutes","system_usage_stats","system_learning_profiles","system_warnings","system_group_command_settings","system_command_settings","role_permission_templates","system_custom_commands","system_group_bans","system_broadcast_jobs","system_broadcast_recipients"];
   const snapshot = await createBackupSnapshot(env, tables, 5000);
   if (snapshot.truncated_tables.length) {
     throw new Error(`تعذر إنشاء نسخة كاملة: تجاوزت الجداول التالية 5000 سجل: ${snapshot.truncated_tables.join(", ")}. يلزم تصدير مجزأ قبل اعتبار النسخة صالحة للاستعادة.`);
@@ -1583,12 +1790,12 @@ async function restoreBackup(env, message, actorId) {
   const backup = await response.json();
   validateBackupSnapshot(backup, ["users","conversations","messages","learning_profiles","recurring_mistakes",
     "admins","admin_custom_commands","blocked_users","warnings","groups","bot_settings","instructions",
-    "audit_logs","alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state","bot_profile_settings","bot_instructions","group_command_settings","system_config","system_instructions","system_bans","system_users","system_groups","system_rules","system_rate_limits","system_mutes","system_usage_stats","system_learning_profiles","system_warnings","system_group_command_settings","system_group_bans","system_broadcast_jobs","system_broadcast_recipients"]);
+    "audit_logs","alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state","bot_profile_settings","bot_instructions","group_command_settings","system_config","system_instructions","system_bans","system_users","system_groups","system_rules","system_rate_limits","system_group_rate_limits","system_group_settings","system_mutes","system_usage_stats","system_learning_profiles","system_warnings","system_group_command_settings","system_command_settings","role_permission_templates","system_custom_commands","system_group_bans","system_broadcast_jobs","system_broadcast_recipients"]);
   // Restore is deliberately merge-only: existing rows are not deleted.
   // Parent tables are restored before dependent message rows.
   const allowed = ["users","conversations","messages","learning_profiles","recurring_mistakes",
     "admins","admin_custom_commands","blocked_users","warnings","groups","bot_settings","instructions",
-    "audit_logs","alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state","bot_profile_settings","bot_instructions","group_command_settings","system_config","system_instructions","system_bans","system_users","system_groups","system_rules","system_rate_limits","system_mutes","system_usage_stats","system_learning_profiles","system_warnings","system_group_command_settings","system_group_bans","system_broadcast_jobs","system_broadcast_recipients"];
+    "audit_logs","alerts","usage_stats","error_logs","backup_logs","mutes","welcome_events","daki_state","bot_profile_settings","bot_instructions","group_command_settings","system_config","system_instructions","system_bans","system_users","system_groups","system_rules","system_rate_limits","system_group_rate_limits","system_group_settings","system_mutes","system_usage_stats","system_learning_profiles","system_warnings","system_group_command_settings","system_command_settings","role_permission_templates","system_custom_commands","system_group_bans","system_broadcast_jobs","system_broadcast_recipients"];
   let count = 0;
   for (const table of allowed) {
     const rows = backup.tables[table];
@@ -1807,27 +2014,98 @@ async function markBusinessMessageRead(env, msg, config) {
 }
 
 async function handleMessage(env, msg, business) {
-  if (!msg?.chat || !msg?.from || msg.from.is_bot) return;
+  if (!msg?.chat || !msg?.from) return;
   const actorId = getUserId(msg.from);
   const chatId = msg.chat.id;
   const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup";
   const connectionId = business ? msg.business_connection_id : "";
-  const messageText = String(msg.text || msg.caption || "").trim();
   const activeScope = business ? "business" : "bot";
   const scopedReplyConfig = await loadSystemConfig(env, activeScope);
+  if (msg.from.is_bot && scopedReplyConfig.ignore_bots_channels === "1") return;
+  const isSticker = !!msg.sticker;
+  if (isSticker && scopedReplyConfig.ignore_stickers === "1") return;
+  const messageText = String(msg.text || msg.caption || (isSticker ? `[ملصق تيليجرام ${msg.sticker.emoji || ''}]` : "")).trim();
 
   await upsertUser(env, msg.from, business);
   if (isGroup) await upsertGroup(env, msg.chat, business);
+  const groupConfig = isGroup ? await loadSystemGroupConfig(env,activeScope,chatId) : {};
+  const effectiveConfig = { ...scopedReplyConfig, ...groupConfig };
+
+  // Welcome newly joined members using the Bot API; delete the Telegram service event only when configured.
+  const isServiceMessage = !!(msg.new_chat_members?.length || msg.left_chat_member || msg.new_chat_title || msg.new_chat_photo || msg.delete_chat_photo || msg.pinned_message || msg.group_chat_created || msg.supergroup_chat_created || msg.migrate_to_chat_id || msg.migrate_from_chat_id || msg.forum_topic_created || msg.forum_topic_closed || msg.forum_topic_reopened);
+  if (!business && isGroup && isServiceMessage) {
+    if (Array.isArray(msg.new_chat_members) && msg.new_chat_members.length && effectiveConfig.welcome_enabled === "1") {
+      const template = String(effectiveConfig.welcome_text || "أهلاً {name} بك في {chat}! يرجى الالتزام بقوانين المجموعة.").slice(0,1000);
+      for (const member of msg.new_chat_members.filter(item => !item.is_bot)) {
+        const name = [member.first_name,member.last_name].filter(Boolean).join(" ") || member.username || "صديقنا";
+        const welcome = template.replace(/\{name\}/g,name).replace(/\{chat\}/g,String(msg.chat.title || "المجموعة"));
+        await sendMessage(env,chatId,welcome,{reply_parameters:{message_id:msg.message_id,allow_sending_without_reply:true}});
+      }
+    }
+    if (effectiveConfig.auto_delete_service_messages === "1" && msg.message_id) {
+      try { await tg(env,"deleteMessage",{chat_id:chatId,message_id:msg.message_id}); }
+      catch(error) { await logError(env,"SERVICE_MESSAGE_DELETE",error,`chat=${chatId},message=${msg.message_id}`); }
+    }
+    return;
+  }
+
+  // Group flood protection is isolated by Bot group and user.
+  if (!business && isGroup && effectiveConfig.anti_spam === "1" && actorId !== OWNER_ID && !(await getAdmin(env,actorId))) {
+    const now = nowTs();
+    const limit = Math.max(1,Math.min(120,Number(effectiveConfig.flood_limit_per_minute || 8) || 8));
+    const counter = await env.DB.prepare(`INSERT INTO system_group_rate_limits(system_scope,chat_id,user_id,window_started,request_count)
+      VALUES('bot',?,?,?,1) ON CONFLICT(system_scope,chat_id,user_id) DO UPDATE SET
+      window_started=CASE WHEN system_group_rate_limits.window_started<=? THEN excluded.window_started ELSE system_group_rate_limits.window_started END,
+      request_count=CASE WHEN system_group_rate_limits.window_started<=? THEN 1 ELSE system_group_rate_limits.request_count+1 END
+      RETURNING request_count`).bind(String(chatId),actorId,now,now-60,now-60).first();
+    if (Number(counter?.request_count || 0) > limit) {
+      const minutes = Math.max(1,Math.min(1440,Number(effectiveConfig.flood_mute_minutes || 10) || 10));
+      const until = now + minutes*60;
+      try {
+        await tg(env,"restrictChatMember",{chat_id:chatId,user_id:Number(actorId),permissions:{can_send_messages:false,can_send_audios:false,can_send_documents:false,can_send_photos:false,can_send_videos:false,can_send_video_notes:false,can_send_voice_notes:false,can_send_polls:false,can_send_other_messages:false,can_add_web_page_previews:false},until_date:until});
+        await env.DB.prepare(`INSERT INTO system_mutes(system_scope,user_id,chat_id,until_ts,reason,muted_by) VALUES('bot',?,?,?,?,?)
+          ON CONFLICT(system_scope,user_id,chat_id) DO UPDATE SET until_ts=excluded.until_ts,reason=excluded.reason,muted_by=excluded.muted_by`)
+          .bind(actorId,String(chatId),until,"Anti-spam flood limit", "system").run();
+        await sendMessage(env,chatId,`تم كتم العضو ${msg.from.first_name || actorId} لمدة ${minutes} دقيقة بسبب الإغراق بالرسائل.`,replyOptions(msg,false));
+      } catch(error) { await logError(env,"ANTI_SPAM_MUTE",error,`chat=${chatId},user=${actorId}`); }
+      return;
+    }
+  }
+
+  if (isGroup && effectiveConfig.block_links === "1" && /(?:https?:\/\/|www\.|t\.me\/)/i.test(messageText)) {
+    if (!business) {
+      try { if (msg.message_id) await tg(env,"deleteMessage",{chat_id:chatId,message_id:msg.message_id}); }
+      catch(error) { await logError(env,"BLOCK_LINK_DELETE",error,`chat=${chatId},message=${msg.message_id}`); }
+      await sendMessage(env,chatId,"تم حذف الرسالة لأن نشر الروابط غير مسموح في هذه المجموعة.",replyOptions(msg,false));
+    }
+    return;
+  }
 
   const command = parseCommand(messageText, BOT_USERNAME);
   if (business && actorId === OWNER_ID && !command && scopedReplyConfig.stop_on_manual_reply !== "0") {
-    const peerId = String(chatId);
-    const manualPauseKey = assistantPauseStateKey({ chat: { id: chatId } }, peerId, true);
-    await env.DB.prepare(`INSERT INTO daki_state(state_key,state_value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
-      ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at=CURRENT_TIMESTAMP`)
-      .bind(manualPauseKey,String(nowTs()+24*60*60)).run();
+    const ownerTools = await env.DB.prepare("SELECT command_name FROM system_custom_commands WHERE system_scope='business' AND category='tools' AND enabled=1").all();
+    const isOwnerTool = (ownerTools.results || []).some(rule=>messageText.toLocaleLowerCase().startsWith(String(rule.command_name).toLocaleLowerCase()));
+    if (!isOwnerTool) {
+      const peerId = String(chatId);
+      const manualPauseKey = assistantPauseStateKey({ chat: { id: chatId } }, peerId, true);
+      await env.DB.prepare(`INSERT INTO daki_state(state_key,state_value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at=CURRENT_TIMESTAMP`)
+        .bind(manualPauseKey,String(nowTs()+24*60*60)).run();
+      return;
+    }
+  }
+  // Respect the independent Business/Bot master switch before commands or AI classifiers run.
+  const enabledKey = business ? "business_enabled" : "bot_enabled";
+  if (await getSetting(env,enabledKey,"1") !== "1") {
+    if (actorId === OWNER_ID) {
+      const label = business ? "مساعد حساب Telegram Business" : "بوت DAKI";
+      await sendMessage(env,chatId,`${label} متوقف حالياً من لوحة الإدارة.`,replyOptions(msg,business));
+    }
     return;
   }
+  // Gate ordinary group text before the AI handoff classifier; slash commands remain available.
+  if (isGroup && !command && !(await isGroupAllowed(env,chatId,messageText,msg.reply_to_message,business))) return;
+  if (actorId !== OWNER_ID && await isSystemBanned(env,activeScope,actorId)) return;
   const stateKey = handoffStateKey(msg, actorId, business);
   if (command?.name === "bot") {
     await env.DB.prepare("DELETE FROM daki_state WHERE state_key=? OR state_key=?")
@@ -1862,6 +2140,43 @@ async function handleMessage(env, msg, business) {
     // A different message starts a new request; discard the old continuation.
     await env.DB.prepare("DELETE FROM daki_state WHERE state_key=?").bind(continuationKey).run();
   }
+  if (!business && actorId !== OWNER_ID && await getSetting(env,"maintenance","0") === "1") {
+    const maintenanceMessage = safeString(scopedReplyConfig.maintenance_message || "DAKI في وضع الصيانة حالياً. حاول مرة أخرى لاحقاً.",1000);
+    await sendMessage(env,chatId,maintenanceMessage,replyOptions(msg,false));
+    return;
+  }
+
+  if (!business && !isGroup && actorId !== OWNER_ID && scopedReplyConfig.force_sub_enabled === "1" && scopedReplyConfig.force_sub_channel) {
+    const channel = String(scopedReplyConfig.force_sub_channel).trim();
+    try {
+      const membership = await tg(env,"getChatMember",{chat_id:channel,user_id:Number(actorId)});
+      const member = ["creator","administrator","member"].includes(membership?.status) || (membership?.status === "restricted" && membership?.is_member === true);
+      if (!member) {
+        const username = channel.startsWith("@") ? channel.slice(1) : "";
+        const joinUrl = username ? `https://t.me/${username}` : CHANNEL_URL;
+        await sendMessage(env,chatId,"لاستخدام DAKI، يرجى الاشتراك في قناة المدرسة أولاً ثم إرسال /start مجدداً.",{reply_markup:{inline_keyboard:[[{text:"الاشتراك في القناة",url:joinUrl}]]}});
+        return;
+      }
+    } catch(error) {
+      await logError(env,"FORCE_SUBSCRIPTION_CHECK",error,`user=${actorId},channel=${channel}`);
+      await sendMessage(env,chatId,"تعذر التحقق من الاشتراك حالياً. حاول مرة أخرى بعد قليل.",replyOptions(msg,false));
+      return;
+    }
+  }
+
+  if (business && !isGroup && messageText) {
+    const businessRules = await env.DB.prepare("SELECT command_name,category,response_text,enabled FROM system_custom_commands WHERE system_scope='business' AND enabled=1 ORDER BY LENGTH(command_name) DESC").all();
+    const matchedRule = (businessRules.results || []).find(rule => {
+      if (rule.category === 'tools' && actorId !== OWNER_ID) return false;
+      return messageText.toLocaleLowerCase().startsWith(String(rule.command_name).toLocaleLowerCase());
+    });
+    if (matchedRule) {
+      await sendMessage(env,chatId,safeString(matchedRule.response_text,4000),replyOptions(msg,true));
+      await audit(env,actorId,"custom_business_rule_run",matchedRule.command_name,String(chatId));
+      return;
+    }
+  }
+
   if (command?.name === "start" && !isGroup) {
     await markWelcomed(env, chatId, actorId, connectionId);
     await sendWelcome(env, msg, business);
@@ -1924,6 +2239,32 @@ async function handleMessage(env, msg, business) {
   }
 
   if (command) {
+    if (!business) {
+      const custom = await env.DB.prepare("SELECT command_name,response_text,min_rank,enabled FROM system_custom_commands WHERE system_scope='bot' AND command_name=?")
+        .bind(command.name).first();
+      if (custom) {
+        const globalCustom = await env.DB.prepare("SELECT enabled FROM system_command_settings WHERE system_scope='bot' AND command_name=?").bind(command.name).first();
+        if (Number(custom.enabled) === 0 || (globalCustom && Number(globalCustom.enabled) === 0)) { await sendMessage(env,chatId,"هذا الأمر معطّل حالياً.",replyOptions(msg,business)); return; }
+        const minimum = ({1:90,3:80,4:70,5:60})[Number(custom.min_rank)] || 60;
+        const sender = actorId === OWNER_ID ? {role:'primary_owner'} : await getAdmin(env,actorId);
+        if (!sender || (Number(custom.min_rank) === 1 && actorId !== OWNER_ID) || (ADMIN_ROLE_RANK[sender.role] ?? 0) < minimum) { await sendMessage(env,chatId,"ليست لديك الرتبة اللازمة لتنفيذ هذا الأمر.",replyOptions(msg,business)); return; }
+        if (isGroup) {
+          const groupCommand = await env.DB.prepare("SELECT enabled FROM system_group_command_settings WHERE system_scope='bot' AND chat_id=? AND command_name=?").bind(String(chatId),command.name).first();
+          if (groupCommand && Number(groupCommand.enabled) === 0) { await sendMessage(env,chatId,"هذا الأمر غير مفعّل في هذه المجموعة.",replyOptions(msg,business)); return; }
+        }
+        await sendMessage(env,chatId,safeString(custom.response_text,4000),replyOptions(msg,business));
+        await audit(env,actorId,"custom_bot_command_run",command.name,String(chatId));
+        return;
+      }
+    }
+    if (ADMIN_COMMANDS.some(item => item.name === command.name && !item.ownerOnly)) {
+      const globalCommand = await env.DB.prepare("SELECT enabled FROM system_command_settings WHERE system_scope=? AND command_name=?")
+        .bind(activeScope,command.name).first();
+      if (globalCommand && Number(globalCommand.enabled) === 0 && actorId !== OWNER_ID) {
+        await sendMessage(env,chatId,"هذا الأمر معطّل حالياً من إدارة البوت.",replyOptions(msg,business));
+        return;
+      }
+    }
     if (isGroup && ADMIN_COMMANDS.some(item => item.name === command.name)) {
       const groupCommand = await env.DB.prepare("SELECT enabled FROM system_group_command_settings WHERE system_scope=? AND chat_id=? AND command_name=?")
         .bind(activeScope,String(chatId), command.name).first();
@@ -1936,8 +2277,7 @@ async function handleMessage(env, msg, business) {
     if (handled) return;
   }
 
-  if (await isSystemBanned(env, activeScope, actorId)) return;
-  if (await isSystemContentBlocked(env, activeScope, messageText)) return;
+  if (await isSystemContentBlocked(env, activeScope, messageText, isGroup ? groupConfig : null)) return;
   const mute = await env.DB.prepare("SELECT until_ts FROM system_mutes WHERE system_scope=? AND user_id=? AND chat_id=?")
     .bind(activeScope,actorId,String(chatId)).first();
   if (mute && Number(mute.until_ts) > nowTs()) return;
@@ -1956,18 +2296,6 @@ async function handleMessage(env, msg, business) {
   if (business && isPrivate(msg.chat) && scopedReplyConfig.private_auto_reply === "0") return;
   // Keep Telegram Business and the standalone bot independently switchable.
   // Existing bot_enabled values continue to control the bot; Business defaults to enabled.
-  const enabledKey = business ? "business_enabled" : "bot_enabled";
-  if (await getSetting(env, enabledKey, "1") !== "1") {
-    if (actorId === OWNER_ID) {
-      const label = business ? "مساعد حساب Telegram Business" : "بوت DAKI";
-      await sendMessage(env, chatId, `${label} متوقف حالياً من لوحة الإدارة.`, replyOptions(msg, business));
-    }
-    return;
-  }
-  if (!business && await getSetting(env, "maintenance", "0") === "1" && actorId !== OWNER_ID) {
-    await sendMessage(env, chatId, "DAKI في وضع الصيانة حالياً. حاول مرة أخرى لاحقاً.", replyOptions(msg, business));
-    return;
-  }
   if (actorId !== OWNER_ID && !(await consumeSystemRateLimit(env,activeScope,actorId,scopedReplyConfig.rate_limit_per_user))) return;
   if (business) {
     const schedule = businessScheduleState(scopedReplyConfig);
