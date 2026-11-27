@@ -1,0 +1,13 @@
+{
+  "name": "daki-ai-assistant",
+  "private": true,
+  "version": "2.9.8",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "check": "node --check worker.js && node --check commands.js && node --check moderation.js && node --check dashboard/admin-html.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
