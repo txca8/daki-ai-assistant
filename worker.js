@@ -264,7 +264,7 @@ function splitAnswerCoherently(value, maxLength = 2500) {
   return chunks;
 }
 async function detectHumanHandoffIntent(env, userText, history = []) {
-  // Semantic-only intent understanding. No phrase lists, keyword matching or dialect-specific rules.
+  // Semantic intent classifier. Invalid/empty classifier output must never interrupt ordinary AI replies.
   const context = (Array.isArray(history) ? history : []).slice(-8).map(item => ({
     role: item.role === "assistant" ? "assistant" : "user",
     content: String(item.content || "").slice(0, 900)
@@ -283,44 +283,46 @@ async function detectHumanHandoffIntent(env, userText, history = []) {
     ...context,
     { role: "user", content: String(userText || "").slice(0, 1800) }
   ];
-  try {
-    let result = await env.AI.run(MODEL, { messages, max_tokens: 8, temperature: 0 });
+  const extractClassifierText = (result) => {
     let raw = result?.response ?? result?.choices?.[0]?.message?.content ??
-      result?.result?.response ?? result?.output ?? "";
+      result?.result?.response ?? result?.output ?? result?.text ?? result?.content ?? "";
+    if (Array.isArray(raw)) raw = raw.map(x => typeof x === "string" ? x : (x?.text || x?.content || "")).join(" ");
     if (typeof raw !== "string") {
-      if (raw && typeof raw === "object") raw = raw.text ?? raw.content ?? JSON.stringify(raw);
+      if (raw && typeof raw === "object") raw = raw.text ?? raw.content ?? raw.response ?? "";
       else raw = String(raw ?? "");
     }
-    const normalized = raw.trim().toUpperCase();
+    return raw.trim().toUpperCase();
+  };
+  const classify = (raw) => {
+    const normalized = String(raw || "").replace(/[^A-Z]/g, " ").trim();
     if (/\bHANDOFF\b/.test(normalized) && !/\bNORMAL\b/.test(normalized)) return true;
     if (/\bNORMAL\b/.test(normalized) && !/\bHANDOFF\b/.test(normalized)) return false;
-
-    // One format-repair retry if the model did not follow the one-token contract.
-    result = await env.AI.run(MODEL, {
-      messages: [
-        { role: "system", content: "Return exactly HANDOFF if the user's intent is to reach or speak personally with the human account owner/operator; otherwise return exactly NORMAL. Judge meaning and conversation context across any language or dialect. No keyword list. Output one token only." },
-        ...context,
-        { role: "user", content: String(userText || "").slice(0, 1800) }
-      ],
-      max_tokens: 8,
-      temperature: 0
-    });
-    raw = result?.response ?? result?.choices?.[0]?.message?.content ??
-      result?.result?.response ?? result?.output ?? "";
-    if (typeof raw !== "string") {
-      if (raw && typeof raw === "object") raw = raw.text ?? raw.content ?? JSON.stringify(raw);
-      else raw = String(raw ?? "");
+    return null;
+  };
+  const repairPrompt = "Classify the user's intent to contact or speak personally with the human account owner. Return exactly HANDOFF or NORMAL, one word only. HANDOFF means they want the human involved; NORMAL means they do not.";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const result = await env.AI.run(MODEL, {
+        messages: attempt === 0 ? messages : [
+          { role: "system", content: repairPrompt }, ...context,
+          { role: "user", content: String(userText || "").slice(0, 1800) }
+        ],
+        max_tokens: 24,
+        temperature: 0
+      });
+      const raw = extractClassifierText(result);
+      const decision = classify(raw);
+      if (decision !== null) return decision;
+      // Don't print the conversation or user text. Only bounded classifier output/shape.
+      console.error("Handoff classifier returned an invalid result (attempt " + (attempt + 1) + "):", safeString(raw || "<empty>", 80));
+    } catch (error) {
+      console.error("Handoff classifier attempt " + (attempt + 1) + " failed:", safeString(error?.message || error, 250));
     }
-    const retry = raw.trim().toUpperCase();
-    if (/\bHANDOFF\b/.test(retry) && !/\bNORMAL\b/.test(retry)) return true;
-    if (/\bNORMAL\b/.test(retry) && !/\bHANDOFF\b/.test(retry)) return false;
-    console.error("Handoff classifier returned an unrecognized result:", safeString(retry, 120));
-  } catch (error) {
-    console.error("Handoff intent classification failed:", safeString(error?.message || error, 400));
   }
-  // Fail closed on AI/service failure; never substitute brittle phrase matching.
+  // Safe fallback: treat classifier failure as NORMAL so the main assistant still replies.
   return false;
 }
+
 function assistantControlKeyboard(paused = false, scope = "business") {
   const safeScope = scope === "bot" ? "bot" : "business";
   return { inline_keyboard: [[{
