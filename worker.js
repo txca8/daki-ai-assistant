@@ -1695,7 +1695,8 @@ async function isGroupAllowed(env, chatId, textMessage, replyTo, business = fals
 const mention = new RegExp(`@${BOT_USERNAME}\\b`, "i").test(textMessage || "");
 const replyUsername = String(replyTo?.from?.username || "").replace(/^@/, "").toLowerCase();
 const reply = replyUsername === BOT_USERNAME.toLowerCase();
-return mention || reply;
+const keyword = !business && /(^|[^\p{L}\p{N}_])بوت(?=$|[^\p{L}\p{N}_])/u.test(textMessage || "");
+return mention || reply || keyword;
 }
 async function upsertGroup(env, chat, business = false) {
   const scope = business ? "business" : "bot";
@@ -2191,7 +2192,7 @@ async function handleMessage(env, msg, business) {
   const handoffHistory = existingHandoffConversation
     ? await loadHistory(env, existingHandoffConversation.id)
     : [];
-  if (!command && actorId !== OWNER_ID && scopedReplyConfig.handoff_enabled !== "0" &&
+  if (business && !command && actorId !== OWNER_ID && scopedReplyConfig.handoff_enabled !== "0" &&
       await detectHumanHandoffIntent(env, messageText, handoffHistory)) {
     const displayName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(" ") || "غير معروف";
     const username = msg.from.username ? "@" + msg.from.username : "بدون اسم مستخدم";
