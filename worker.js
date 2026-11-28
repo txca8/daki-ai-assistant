@@ -1691,10 +1691,11 @@ async function isGroupAllowed(env, chatId, textMessage, replyTo, business = fals
       .bind(scope,String(chatId),parsed.name).first();
     return !groupSetting || Number(groupSetting.enabled)!==0;
   }
-  const mention = new RegExp(`@${OWNER_USERNAME}\\b`, "i").test(textMessage || "");
-  const replyUsername = String(replyTo?.from?.username || replyTo?.sender_chat?.username || "").replace(/^@/, "").toLowerCase();
-  const reply = replyUsername === OWNER_USERNAME.toLowerCase();
-  return mention || reply;
+  
+const mention = new RegExp(`@${BOT_USERNAME}\\b`, "i").test(textMessage || "");
+const replyUsername = String(replyTo?.from?.username || "").replace(/^@/, "").toLowerCase();
+const reply = replyUsername === BOT_USERNAME.toLowerCase();
+return mention || reply;
 }
 async function upsertGroup(env, chat, business = false) {
   const scope = business ? "business" : "bot";
