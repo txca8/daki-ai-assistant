@@ -1620,9 +1620,15 @@ const legacyExtra = business
     ...history,
     { role: "user", content: userText }
   ], Number.isFinite(temperature) ? temperature : undefined, Number(config.max_tokens || 2048), ALLOWED_AI_MODELS.includes(config.model) ? config.model : MODEL);
-  await saveMessage(env, conversationId, "user", userText);
-  await saveMessage(env, conversationId, "assistant", parsed.reply);
-  await updateLearning(env, business ? "business" : "bot", userId, userText, parsed.reply);
+  await Promise.all([
+  (async () => {
+    await saveMessage(env, conversationId, "user", userText);
+    await saveMessage(env, conversationId, "assistant", parsed.reply);
+  })(),
+  updateLearning(env, business ? "business" : "bot", userId, userText, parsed.reply)
+]);
+
+return parsed;
   return parsed;
 }
 function welcomeMarker(connectionId) {
