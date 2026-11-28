@@ -2185,13 +2185,18 @@ async function handleMessage(env, msg, business) {
     return;
   }
   if (business && command?.name === "start") return;
+  let handoffHistory = [];
+
+if (business) {
   const existingHandoffKey = conversationKey(chatId, connectionId, actorId, business);
   const existingHandoffConversation = await env.DB.prepare(
     "SELECT id FROM conversations WHERE conversation_key=?"
   ).bind(existingHandoffKey).first();
-  const handoffHistory = existingHandoffConversation
+
+  handoffHistory = existingHandoffConversation
     ? await loadHistory(env, existingHandoffConversation.id)
     : [];
+}
   if (business && !command && actorId !== OWNER_ID && scopedReplyConfig.handoff_enabled !== "0" &&
       await detectHumanHandoffIntent(env, messageText, handoffHistory)) {
     const displayName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(" ") || "غير معروف";
