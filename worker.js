@@ -1592,11 +1592,19 @@ async function updateLearning(env, scope, userId, userText, answer) {
 }
 async function aiReply(env, conversationId, userId, userText, business = false) {
   if (!env.AI?.run) throw new Error("Workers AI binding AI is missing");
-  const history = await loadHistory(env, conversationId);
-  const scope = business ? "business" : "bot";
-  const config = await loadSystemConfig(env, scope);
-  const instructions = await loadSystemInstructions(env, scope);
-  const legacyExtra = business ? "" : buildBotOnlyInstructions(await loadBotProfile(env), await loadBotInstructions(env));
+const scope = business ? "business" : "bot";
+
+const [history, config, instructions, botProfile, botInstructions] = await Promise.all([
+  loadHistory(env, conversationId),
+  loadSystemConfig(env, scope),
+  loadSystemInstructions(env, scope),
+  business ? Promise.resolve(null) : loadBotProfile(env),
+  business ? Promise.resolve("") : loadBotInstructions(env)
+]);
+
+const legacyExtra = business
+  ? ""
+  : buildBotOnlyInstructions(botProfile, botInstructions);
   const configParts = [];
   const labels = business
     ? { bot_name:"اسم المساعد",tone:"نبرة الرد",reply_length:"طول الرد",working_hours:"ساعات العمل",schedule_start:"بداية الدوام",schedule_end:"نهاية الدوام",away_message:"رسالة الانشغال",thinking_style:"أسلوب التفكير",system_prompt:"تعليمات الشخصية",extra_rules:"قواعد إضافية" }
